@@ -53,7 +53,9 @@ Phase 1A 仅接受 `binance + futures + BTCUSDT + aggTrade`。任何其他交易
 
 ## 4. Phase 1B 入口
 
-下一阶段将实现真正的 Kafka-compatible `MarketEventPublisher`：
+以下入口已经由 `CANDLESCOPE_SERVER_PHASE1B_EXECUTION_zh.md` 落地并通过真实 Redpanda/PostgreSQL 进程故障门禁：
+
+Phase 1B 的验收目标如下：
 
 1. 使用固定物理 topic，逻辑 `partition_key` 作为消息 key；
 2. 第一条验收流保持单 partition，避免扩容改变 key 到 partition 的映射；

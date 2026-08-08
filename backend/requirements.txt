@@ -13,5 +13,7 @@ ccxt==4.5.60
 cryptography==46.0.1
 jsonschema==4.26.0
 rfc8785==0.1.4
+aiokafka==0.14.0
+psycopg[binary]==3.3.4
 pytest==7.4.4
 trio==0.28.0

@@ -1,0 +1,92 @@
+{
+  "schema_version": "candlescope.server-phase1b-durable-publish-verification.v1",
+  "captured_at_utc": "2026-08-08T13:43:29Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "5da29eb7473bf5ef78d7219fd5fa4ca16e80e030",
+  "source_sync_commit": "b2b0217f64f07b5ed01a9ca610d0a68af1fa4a7b",
+  "source_main_observed_at_capture": "2c4a17b212b727739d04bdf59d77a188721d2542",
+  "source_drift_assessment": "two later source commits only change frontend market metrics and drawing synchronization; the synced backend and CCXT boundary is unchanged",
+  "phase": "phase1b-durable-publish-boundary",
+  "phase1b_passed": true,
+  "runtime": {
+    "logical_partition_key": "binance:futures:BTCUSDT@agg_trade",
+    "physical_topic": "candlescope.market-events.v1",
+    "physical_partitions": [
+      0
+    ],
+    "kafka_key": "logical partition_key UTF-8 bytes",
+    "kafka_value": "RFC 8785 canonical MarketEventEnvelopeV1 bytes",
+    "producer": {
+      "library": "aiokafka 0.14.0",
+      "acks": "all",
+      "enable_idempotence": true
+    },
+    "control_plane": {
+      "database": "PostgreSQL 18.4",
+      "library": "psycopg 3.3.4",
+      "state": [
+        "lease owner and token",
+        "producer epoch",
+        "last acknowledged sequence, event id, and Kafka offset",
+        "full pre-publish pending envelope"
+      ]
+    }
+  },
+  "process_fault_gate": {
+    "fault": "independent Python process exits after Kafka accept and before PostgreSQL checkpoint",
+    "first_owner_epoch": 0,
+    "takeover_owner_epoch": 1,
+    "stale_owner_fenced": true,
+    "retry_offsets": [
+      0,
+      1
+    ],
+    "retry_keys_identical": true,
+    "retry_values_byte_identical": true,
+    "next_event_offset": 2,
+    "final_checkpoint_sequence": 43,
+    "final_checkpoint_offset": 2,
+    "pending_cleared": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1A and Phase 1B unit contract gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py -q",
+      "result": "27 passed"
+    },
+    {
+      "name": "single-node Redpanda and PostgreSQL process-fault integration gate",
+      "command": "CANDLESCOPE_PHASE1B_INTEGRATION=1 CANDLESCOPE_PHASE1B_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/integration/test_server_phase1b_redpanda.py -q",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 0 contracts and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py -q",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py -q",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check and format --check on Phase 1A/1B runtime, worker, and tests",
+      "result": "passed; 19 files already formatted"
+    },
+    {
+      "name": "dependency, compilation, Compose, and patch hygiene",
+      "result": "uv pip check passed for 66 packages; compileall passed; Compose config passed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "Kafka and PostgreSQL provide a cross-system exactly-once transaction",
+    "application-level resend creates only one physical Kafka record",
+    "downstream ClickHouse or Parquet consumers are implemented",
+    "a lease heartbeat and always-on collector runner are implemented",
+    "TLS, SASL, and production secret management are configured",
+    "the FastAPI server profile is supported",
+    "24 hour ingestion continuity has passed",
+    "the complete CandleScope server is deployable"
+  ]
+}

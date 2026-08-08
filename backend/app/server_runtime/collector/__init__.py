@@ -7,11 +7,14 @@ from .agg_trade import (
     InvalidPublishReceiptError,
     PendingPublishError,
 )
+from .leased_agg_trade import LeasedAggTradeCollector, LeasedCollectorFailedError
 
 __all__ = [
     "AggTradeCollector",
     "CollectorContinuityError",
     "CollectorIntegrityError",
     "InvalidPublishReceiptError",
+    "LeasedAggTradeCollector",
+    "LeasedCollectorFailedError",
     "PendingPublishError",
 ]

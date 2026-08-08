@@ -59,6 +59,8 @@ _BINANCE_FIELDS = {
         "agg_trade_id",
         "price",
         "quantity",
+        "price_text",
+        "quantity_text",
         "first_trade_id",
         "last_trade_id",
         "trade_time_ms",

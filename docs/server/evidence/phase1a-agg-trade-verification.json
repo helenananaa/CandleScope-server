@@ -1,0 +1,57 @@
+{
+  "schema_version": "candlescope.server-phase1a-agg-trade-verification.v1",
+  "captured_at_utc": "2026-08-08T13:19:10Z",
+  "branch": "codex/server-phase1a-aggtrade",
+  "base_commit": "5dd3441d83a0954b9e268d2240e84c053c9e330c",
+  "source_main_commit": "b2b0217f64f07b5ed01a9ca610d0a68af1fa4a7b",
+  "phase": "phase1a-in-memory-publish-boundary",
+  "phase1a_passed": true,
+  "stream": {
+    "exchange": "binance",
+    "market_type": "futures",
+    "symbol": "BTCUSDT",
+    "channel": "agg_trade",
+    "partition_key": "binance:futures:BTCUSDT@agg_trade",
+    "payload_schema": "binance.agg-trade.normalized.v1",
+    "event_id_scheme": "UUIDv5(fixed_namespace, partition_key + newline + source_event_id)"
+  },
+  "gates": [
+    {
+      "name": "Phase 1A exact decimals, deterministic identity, continuity, retry, receipt, and conflict semantics",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1a_agg_trade.py -q",
+      "result": "21 passed"
+    },
+    {
+      "name": "Phase 0 contracts and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py -q",
+      "result": "58 passed"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py -q",
+      "result": "119 passed"
+    },
+    {
+      "name": "new server runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime backend/tests/test_server_phase1a_agg_trade.py && uvx ruff@0.16.2 format --check backend/app/server_runtime backend/tests/test_server_phase1a_agg_trade.py",
+      "result": "passed; 9 files already formatted"
+    },
+    {
+      "name": "touched legacy exchange files lint",
+      "command": "uvx ruff@0.16.2 check --ignore ISC004,TRY004,SIM102 backend/app/exchanges/plugins/binance/adapter.py backend/app/exchanges/plugins/binance/normalizer.py backend/tests/fixtures/exchanges/contract_cases.py",
+      "result": "passed with only the three named pre-existing rule classes excluded"
+    },
+    {
+      "name": "compilation, cross-runtime canonicalization, dependency, and patch hygiene",
+      "result": "compileall passed; Node verified 3 RFC 8785 vectors; uv pip check passed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "the in-memory publisher is durable",
+    "producer epoch or sequence checkpoints survive a process restart",
+    "the FastAPI server profile is supported",
+    "Kafka, ClickHouse, MinIO, or PostgreSQL adapters exist",
+    "24 hour ingestion continuity has passed",
+    "the server collector is deployable"
+  ]
+}

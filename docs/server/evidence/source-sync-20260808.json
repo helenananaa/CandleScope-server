@@ -1,0 +1,60 @@
+{
+  "schema_version": "candlescope.server-source-sync-verification.v1",
+  "captured_at_utc": "2026-08-08T12:59:21Z",
+  "branch": "codex/server-foundation-phase0",
+  "source_checkout": "/mnt/h/program/CandleScope",
+  "source_branch": "main",
+  "source_commit": "b2b0217f64f07b5ed01a9ca610d0a68af1fa4a7b",
+  "source_main_ahead_of_origin": 148,
+  "validated_server_commit": "13fa045e49c331d4dc221b46d108d4297e474294",
+  "sync_method": "fetch committed local main and rebase the server contract commit",
+  "source_worktree_changes_included": false,
+  "scoped_sync_gates_passed": true,
+  "gates": [
+    {
+      "name": "server Phase 0 contracts and shared market stream models",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py -q",
+      "result": "58 passed"
+    },
+    {
+      "name": "CCXT provider, recovery, plugin, registry, and API contracts",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py -q",
+      "result": "77 passed"
+    },
+    {
+      "name": "cross-runtime RFC 8785 golden vectors",
+      "command": "node backend/scripts/verify_server_rfc8785_vectors.mjs",
+      "result": "3 vectors verified"
+    },
+    {
+      "name": "dependency consistency",
+      "command": "uv pip check --python backend/.venv/bin/python",
+      "result": "all installed packages are compatible"
+    },
+    {
+      "name": "linked crosshair frontend tests from the final source commit",
+      "command": "tsx --test src/components/__tests__/SingleChartPanes.test.ts src/features/chart-representation/__tests__/axisTime.test.ts",
+      "result": "not executed in WSL",
+      "classification": "the server checkout has no frontend node_modules, the source checkout contains the Windows esbuild binary, and Windows PowerShell is unavailable from this environment"
+    },
+    {
+      "name": "full backend observation",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests -q",
+      "result": "3222 passed, 64 failed, 20 skipped, 9 errors",
+      "classification": "not a release gate in this WSL environment; failures are concentrated in Windows-pinned plugin artifacts, frozen plugin contract drift, the Rust 1.97.1 gate, local plugin startup state, and an existing timing-sensitive archive assertion"
+    }
+  ],
+  "sync_repairs": [
+    {
+      "commit": "13fa045e49c331d4dc221b46d108d4297e474294",
+      "description": "fall back to the portable proxy reader when a simulated or embedded Windows host does not expose getproxies_registry"
+    }
+  ],
+  "claims_not_made": [
+    "the full backend suite passes under WSL",
+    "the final frontend commit passes its tests under WSL",
+    "the server runtime is deployable",
+    "Linux official plugin bundles exist",
+    "24 hour CCXT ingestion continuity has passed"
+  ]
+}

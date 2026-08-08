@@ -79,3 +79,7 @@ Phase 1 从单一真实高频通道开始：
 机器可读证据位于 evidence/phase0-verification.json。Phase 0.1 合同与市场流测试 58 项通过；Python 与 Node.js 对同一组 RFC 8785 golden vectors 得到相同结果；Draft 2020-12 Schema、严格无重复键解析、Ruff、格式、compileall、三个 JSON 合同、依赖一致性和 git diff 检查通过。
 
 全量 Replay 相关测试为 782 通过、1 失败。唯一失败在未修改的 Windows 原仓库同一 HEAD 上可稳定复现，属于既有错误码期望漂移，不由本阶段引入。WSL 无法执行绑定 Windows AMD64 官方插件 bundle 的 release gate；该平台边界单独记录，不作为 Linux 服务器能力已交付的证据。
+
+## 8. 2026-08-08 原仓库同步
+
+服务器分支已 rebase 到个人仓库已提交的 `main@b2b0217f`，包括 CCXT 4.5.60 主 Provider、统一交易所目录、断线恢复、多图表运行时基线和随后提交的联动十字线刷新修复；个人仓库工作区里的未提交设计文件未被带入。同步后的 Server Phase 0 门禁为 58 项通过，CCXT 定向门禁为 77 项通过。完整 WSL 后端套件的环境受限结果和非声明项记录在 `evidence/source-sync-20260808.json`，不得据此声称 Windows 固定插件发布门禁或完整服务器运行时已经通过。

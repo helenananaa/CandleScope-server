@@ -74,6 +74,7 @@ from app.core.config import (
 from app.core.executors import executors_snapshot
 from app.core.runtime_metrics import EventLoopLagMonitor, ws_runtime_metrics
 from app.data_engine.data_manager.capacity import build_capacity_snapshot
+from app.deployment import load_deployment_settings
 from app.plugin_core_v2 import create_core_plugin_router
 from app.data_engine.storage import (
     init_klines_storage,
@@ -218,6 +219,11 @@ async def _init_replay_runtime() -> None:
 @app.on_event("startup")
 async def startup_event() -> None:
     """Application startup handler."""
+    deployment_settings = load_deployment_settings()
+    deployment_settings.require_runtime_support()
+    app.state.deployment_profile = deployment_settings.profile.value
+    app.state.deployment_contract_version = deployment_settings.contract_version
+
     lag_monitor = EventLoopLagMonitor(interval_seconds=EVENT_LOOP_LAG_INTERVAL_SECONDS)
     lag_monitor.start()
     app.state.event_loop_lag_monitor = lag_monitor

@@ -1,0 +1,40 @@
+{
+  "contract_version": "candlescope.rfc8785-payload-golden-vectors.v1",
+  "canonicalization": "rfc8785",
+  "encoding": "utf-8",
+  "vectors": [
+    {
+      "name": "ecmascript-numbers-and-negative-zero",
+      "input": {
+        "negative_zero": -0.0,
+        "x": 1.0
+      },
+      "canonical_utf8": "{\"negative_zero\":0,\"x\":1}",
+      "sha256": "5317cf5d6cb5034704fcb8756bf5451e8e5c3ae00d65f16603c9c868b1b4a842"
+    },
+    {
+      "name": "rfc8785-section-3.2.2-primitives",
+      "input": {
+        "numbers": [333333333.33333329, 1e30, 4.50, 2e-3, 1e-27],
+        "string": "€$\u000f\nA'B\"\\\\\"/",
+        "literals": [null, true, false]
+      },
+      "canonical_utf8": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+      "sha256": "2d5e01a318d0f0879ab568c4be289c8b1f64ef8921a53c6277d5e069978baacb"
+    },
+    {
+      "name": "rfc8785-section-3.2.3-utf16-property-order",
+      "input": {
+        "€": "Euro Sign",
+        "\r": "Carriage Return",
+        "דּ": "Hebrew Letter Dalet With Dagesh",
+        "1": "One",
+        "😀": "Emoji: Grinning Face",
+        "": "Control",
+        "ö": "Latin Small Letter O With Diaeresis"
+      },
+      "canonical_utf8": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}",
+      "sha256": "5e321556d22018a9656991a9e94f77ec175fa193e52a2429d312f8419ec8b08c"
+    }
+  ]
+}

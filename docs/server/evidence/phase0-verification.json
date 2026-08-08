@@ -1,0 +1,59 @@
+{
+  "schema_version": "candlescope.server-phase0-verification.v1",
+  "captured_at_utc": "2026-08-07T14:38:30Z",
+  "repository_base_commit": "264416a8ed07a5e7a54df42d824fa6702f1bfb28",
+  "branch": "codex/server-foundation-phase0",
+  "phase0_revision": "phase0.1-contract-repair",
+  "environment": {
+    "distribution": "Ubuntu-22.04 under WSL2",
+    "python": "3.12.13",
+    "virtual_environment": "backend/.venv",
+    "dependency_sets": [
+      "backend/requirements.txt",
+      "backend/requirements-parquet.txt"
+    ]
+  },
+  "phase0_passed": true,
+  "gates": [
+    {
+      "name": "server contracts architecture and market stream models",
+      "command": "PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_server_phase0_contracts.py tests/test_server_phase0_architecture.py tests/test_market_stream_models.py",
+      "result": "58 passed"
+    },
+    {
+      "name": "cross-runtime RFC 8785 golden vectors",
+      "command": "node scripts/verify_server_rfc8785_vectors.mjs",
+      "result": "3 vectors matched canonical UTF-8 and SHA-256 in Python and Node.js"
+    },
+    {
+      "name": "new Python lint and format",
+      "command": "uvx ruff@0.16.2 check app/deployment app/server_contracts tests/test_server_phase0_architecture.py tests/test_server_phase0_contracts.py && uvx ruff@0.16.2 format --check app/deployment app/server_contracts tests/test_server_phase0_architecture.py tests/test_server_phase0_contracts.py",
+      "result": "ruff check passed and 7 files were already formatted"
+    },
+    {
+      "name": "contract compilation and parsing",
+      "result": "compileall passed; 3 JSON contracts parsed without duplicate keys; Draft 2020-12 meta-schema validation passed"
+    },
+    {
+      "name": "dependency consistency",
+      "command": "uv pip check --python .venv/bin/python",
+      "result": "all installed packages are compatible"
+    },
+    {
+      "name": "patch hygiene",
+      "result": "git diff --check passed"
+    }
+  ],
+  "broader_regression_observation": {
+    "replay_suite": "782 passed and 1 failed",
+    "known_failure": "test_bar_selection_starts_after_unverified_gap_and_ends_at_real_tail",
+    "classification": "pre-existing on the unmodified Windows source at the same base commit",
+    "windows_plugin_release_gates": "not portable to WSL because the pinned official bundle targets Windows AMD64 CPython 3.12"
+  },
+  "claims_not_made": [
+    "server runtime is deployable",
+    "Linux official plugin bundles exist",
+    "the provisional capacity envelope has been achieved",
+    "24 hour ingestion continuity has passed"
+  ]
+}

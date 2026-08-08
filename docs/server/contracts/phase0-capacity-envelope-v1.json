@@ -1,0 +1,45 @@
+{
+  "contract_version": "candlescope.server-capacity-envelope.v1",
+  "status": "provisional_validation_target_not_capacity_claim",
+  "logical_deployment": "one_company_one_candlescope_cluster",
+  "ingestion": {
+    "sustained_normalized_events_per_second": 100000,
+    "burst_normalized_events_per_second": 500000,
+    "burst_duration_seconds": 60,
+    "accepted_event_data_loss": 0,
+    "accepted_event_durable_p99_ms": 1000
+  },
+  "interactive_frontends": {
+    "concurrent_users": 250,
+    "concurrent_websocket_connections": 750,
+    "logical_market_subscriptions": 50000,
+    "burst_delivered_messages_per_second": 500000,
+    "interactive_query_p95_ms": 1500,
+    "live_fanout_p99_ms": 1000
+  },
+  "replay": {
+    "concurrent_sessions": 100,
+    "maximum_full_tracks_per_session": 8,
+    "session_start_p95_ms": 5000,
+    "interactive_command_to_projection_p95_ms": 250,
+    "deterministic_state_hash_required": true
+  },
+  "analysis": {
+    "concurrent_cpu_jobs": 32,
+    "concurrent_gpu_jobs": 4,
+    "resource_pool_isolated_from_ingestion": true,
+    "immutable_data_epoch_required": true
+  },
+  "retention": {
+    "hot_event_days": 30,
+    "immutable_archive_policy": "organization_defined_no_implicit_deletion"
+  },
+  "promotion_requires": [
+    "recorded source catalog and measured bytes per day",
+    "24 hour single-channel continuity soak",
+    "failure injection for producer consumer and storage restarts",
+    "reconciled event counts sequence coverage and payload hashes",
+    "load evidence on declared production hardware",
+    "resource-isolation evidence for ingestion replay and analysis"
+  ]
+}

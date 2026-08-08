@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://candlescope.dev/contracts/market-event-envelope-v1.schema.json",
+  "title": "CandleScope MarketEventEnvelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "partition_key",
+    "stream",
+    "delivery_class",
+    "source",
+    "source_event_id",
+    "sequence_start",
+    "sequence_end",
+    "previous_sequence",
+    "producer_id",
+    "producer_epoch",
+    "event_time_ms",
+    "received_at_ms",
+    "published_at_ms",
+    "payload_schema",
+    "payload_canonicalization",
+    "payload_sha256",
+    "payload"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "market-event-envelope.v1"
+    },
+    "event_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "partition_key": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exchange", "market_type", "symbol", "channel", "params"],
+      "properties": {
+        "exchange": {"type": "string", "minLength": 1},
+        "market_type": {"type": "string", "minLength": 1},
+        "symbol": {"type": "string", "minLength": 1},
+        "channel": {
+          "enum": [
+            "kline",
+            "agg_trade",
+            "trade",
+            "ticker",
+            "mini_ticker",
+            "depth",
+            "full_depth",
+            "mark_price",
+            "index_price",
+            "funding_rate",
+            "open_interest",
+            "basis",
+            "liquidation"
+          ]
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        }
+      }
+    },
+    "delivery_class": {
+      "enum": ["latest", "append", "snapshot", "ordered_delta"]
+    },
+    "source": {"type": "string", "minLength": 1},
+    "source_event_id": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "sequence_start": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "sequence_end": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "previous_sequence": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "producer_id": {"type": "string", "minLength": 1},
+    "producer_epoch": {"type": "integer", "minimum": 0},
+    "event_time_ms": {"type": "integer", "minimum": 0},
+    "received_at_ms": {"type": "integer", "minimum": 0},
+    "published_at_ms": {"type": "integer", "minimum": 0},
+    "payload_schema": {"type": "string", "minLength": 1},
+    "payload_canonicalization": {
+      "const": "rfc8785",
+      "description": "RFC 8785 JCS over an I-JSON payload, encoded as UTF-8"
+    },
+    "payload_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "payload": {
+      "type": "object",
+      "description": "I-JSON object; integers outside the interoperable IEEE-754 domain must be strings"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {"delivery_class": {"const": "ordered_delta"}},
+        "required": ["delivery_class"]
+      },
+      "then": {
+        "properties": {
+          "sequence_start": {"type": "integer", "minimum": 0},
+          "sequence_end": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "delivery_class": {"enum": ["append", "ordered_delta"]}
+        },
+        "required": ["delivery_class"]
+      },
+      "then": {
+        "anyOf": [
+          {
+            "properties": {
+              "source_event_id": {"type": "string", "minLength": 1}
+            }
+          },
+          {
+            "properties": {
+              "sequence_start": {"type": "integer", "minimum": 0}
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {"sequence_end": {"type": "integer"}},
+        "required": ["sequence_end"]
+      },
+      "then": {
+        "properties": {
+          "sequence_start": {"type": "integer", "minimum": 0}
+        }
+      }
+    }
+  ]
+}

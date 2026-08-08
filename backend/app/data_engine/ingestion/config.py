@@ -63,15 +63,19 @@ def _get_os_proxy() -> str | None:
     Note: ``urllib.request.getproxies()`` short-circuits when
     ``getproxies_environment()`` returns *any* entry (e.g. ``no_proxy``),
     skipping ``getproxies_registry()`` entirely.  We call the registry
-    reader directly on Windows to avoid this.
+    reader directly on Windows when the host Python exposes it, and otherwise
+    fall back to the portable reader used by embedded and simulated hosts.
     """
     import sys
+    from urllib import request
+
     if sys.platform == "win32":
-        from urllib.request import getproxies_registry
-        proxies = getproxies_registry()
+        registry_reader = getattr(request, "getproxies_registry", None)
+        proxies = (
+            registry_reader() if registry_reader is not None else request.getproxies()
+        )
     else:
-        from urllib.request import getproxies
-        proxies = getproxies()
+        proxies = request.getproxies()
     return proxies.get("https") or proxies.get("http") or None
 
 

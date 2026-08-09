@@ -1,4 +1,5 @@
 -r requirements.txt
 
-# Immutable BAR replay history and optional raw aggTrade deterministic replay.
+# Immutable replay history plus the server Parquet/S3 archive profile.
 pyarrow==21.0.0
+boto3==1.43.53

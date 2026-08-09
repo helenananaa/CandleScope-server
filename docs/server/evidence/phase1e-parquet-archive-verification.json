@@ -1,0 +1,127 @@
+{
+  "schema_version": "candlescope.server-phase1e-parquet-archive-verification.v1",
+  "captured_at_utc": "2026-08-09T03:16:20Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "bd726f6f756a57edc29a71b6cecd907b566093d3",
+  "phase": "phase1e-immutable-parquet-snapshot-query",
+  "phase1e_passed": true,
+  "stream": {
+    "topic": "candlescope.market-events.v1",
+    "partition": 0,
+    "partition_key": "binance:futures:BTCUSDT@agg_trade",
+    "kafka_group_id_default": "candlescope-parquet-archiver-v1"
+  },
+  "archive_contract": {
+    "segment_boundary": "fixed event count aligned to Kafka first offset",
+    "default_segment_event_count": 10000,
+    "incomplete_tail_committed": false,
+    "snapshot_version": "last_kafka_offset + 1",
+    "parent_snapshot_version": "first_kafka_offset",
+    "object_write": "S3 PutObject If-None-Match star; no overwrite or delete API",
+    "manifest_canonicalization": "RFC 8785",
+    "manifest_hash": "SHA-256 over exact canonical UTF-8 bytes",
+    "kafka_commit_after": [
+      "Parquet conditional publication and read-back verification",
+      "manifest conditional publication and exact read-back verification"
+    ],
+    "schema_drift_fails_closed": true,
+    "manifest_chain_must_start_at_offset": 0
+  },
+  "parquet": {
+    "schema_version": "market-event-parquet.v1",
+    "compression": "zstd",
+    "pyarrow_version": "21.0.0",
+    "stored_integrity_fields": [
+      "Kafka topic, partition, and offset",
+      "event_id and partition_key",
+      "event_time_ms and sequence range",
+      "canonical envelope JSON and SHA-256"
+    ]
+  },
+  "snapshot_query": {
+    "requires_market_data_snapshot_ref": true,
+    "verifies_complete_parent_chain": true,
+    "verifies_parquet_size_hash_schema_and_ranges": true,
+    "cursor_bindings": [
+      "manifest_sha256",
+      "partition_key",
+      "start_event_time_ms",
+      "end_event_time_ms",
+      "next_index"
+    ],
+    "cross_snapshot_cursor_fails_closed": true
+  },
+  "process_fault_gate": {
+    "infrastructure": [
+      "Redpanda 26.1.14",
+      "MinIO RELEASE.2025-09-07T16-13-09Z",
+      "Boto3 1.43.53",
+      "PyArrow 21.0.0"
+    ],
+    "input_offsets": [0, 1, 2, 3, 4, 5, 6, 7],
+    "input_sequences": [42, 43, 44, 45, 46, 47, 48, 49],
+    "segment_event_count": 4,
+    "writer_a_fault": "process exit 98 after snapshot 4 manifest publication and before Kafka commit",
+    "objects_before_restart": {
+      "parquet": 1,
+      "manifest": 1
+    },
+    "committed_next_offset_before_restart_was_not_4": true,
+    "writer_b_same_group_recovered": true,
+    "writer_b_sigterm_exit_code": 0,
+    "final_committed_next_offset": 8,
+    "final_objects": {
+      "parquet": 2,
+      "manifest": 2
+    },
+    "final_snapshot_chain": [4, 8],
+    "query_page_sizes": [3, 4, 1],
+    "query_sequences": [42, 43, 44, 45, 46, 47, 48, 49]
+  },
+  "gates": [
+    {
+      "name": "Phase 1A through 1E unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py",
+      "result": "48 passed"
+    },
+    {
+      "name": "Phase 1E two-process Redpanda and MinIO manifest replay gate",
+      "command": "CANDLESCOPE_PHASE1E_INTEGRATION=1 CANDLESCOPE_PHASE1E_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1e_parquet_archive.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1D Redpanda and ClickHouse replay regression",
+      "command": "CANDLESCOPE_PHASE1D_INTEGRATION=1 CANDLESCOPE_PHASE1D_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1d_clickhouse.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 0 contracts and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1E runtime lint and format",
+      "command": "uvx ruff check and format --check on Phase 1E contracts, runtime, scripts, and tests",
+      "result": "passed"
+    },
+    {
+      "name": "dependency, compilation, Compose, JSON Schema, JSON, and patch hygiene",
+      "result": "uv pip check passed for 70 packages; compileall passed; Compose config passed; Draft 2020-12 schema and evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "MinIO is the selected production object store",
+    "production TLS, IAM, Object Lock, replication, backup, or disaster recovery are configured",
+    "multipart upload, long-chain compaction, or production archive throughput has passed",
+    "the in-process Parquet query is a capacity-ready HTTP query service",
+    "24 hour public-exchange continuity, reconnect, node-restart, or capacity has passed",
+    "WebSocket fan-out or Replay Worker snapshot integration is implemented",
+    "the FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

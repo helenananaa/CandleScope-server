@@ -1,4 +1,4 @@
-"""Manual-commit Kafka consumer for the frozen Phase 1D projection."""
+"""Manual-commit Kafka consumer for frozen server projection boundaries."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ class KafkaMarketEventConsumer(Protocol):
 
 
 class KafkaMarketEventBatchConsumer:
-    """Read partition zero and commit only after ClickHouse projection."""
+    """Read partition zero and expose at most one uncommitted batch."""
 
     def __init__(
         self,
@@ -54,6 +54,7 @@ class KafkaMarketEventBatchConsumer:
         bootstrap_servers: str | Sequence[str],
         group_id: str,
         client_id: str,
+        exact_batch_size: int | None = None,
         connection_options: Mapping[str, Any] | None = None,
         consumer_factory: Callable[..., Any] = AIOKafkaConsumer,
     ) -> None:
@@ -75,6 +76,11 @@ class KafkaMarketEventBatchConsumer:
         self._bootstrap_servers = servers
         self._group_id = group_id
         self._client_id = client_id
+        self._exact_batch_size = (
+            None
+            if exact_batch_size is None
+            else _positive_int(exact_batch_size, field="exact_batch_size")
+        )
         self._connection_options = options
         self._consumer_factory = consumer_factory
         self._consumer: Any | None = None
@@ -82,6 +88,7 @@ class KafkaMarketEventBatchConsumer:
         self._topic_partition = TopicPartition(MARKET_EVENTS_TOPIC, 0)
         self._next_expected_offset: int | None = None
         self._pending_commit_offset: int | None = None
+        self._buffer: list[KafkaMarketEventRecord] = []
 
     @property
     def started(self) -> bool:
@@ -115,6 +122,7 @@ class KafkaMarketEventBatchConsumer:
             self._consumer = consumer
             self._next_expected_offset = None
             self._pending_commit_offset = None
+            self._buffer.clear()
 
     async def stop(self) -> None:
         async with self._lock:
@@ -122,6 +130,7 @@ class KafkaMarketEventBatchConsumer:
             self._consumer = None
             self._next_expected_offset = None
             self._pending_commit_offset = None
+            self._buffer.clear()
             if consumer is not None:
                 await consumer.stop()
 
@@ -133,14 +142,21 @@ class KafkaMarketEventBatchConsumer:
     ) -> tuple[KafkaMarketEventRecord, ...]:
         timeout_ms = _positive_int(timeout_ms, field="timeout_ms")
         max_records = _positive_int(max_records, field="max_records")
+        if self._exact_batch_size is not None and max_records != self._exact_batch_size:
+            raise ValueError("max_records must equal the configured exact_batch_size")
         consumer = self._require_consumer()
         if self._pending_commit_offset is not None:
             raise KafkaConsumerStateError(
                 "previous batch must be committed before polling again"
             )
+        requested_records = (
+            max_records
+            if self._exact_batch_size is None
+            else self._exact_batch_size - len(self._buffer)
+        )
         batches = await consumer.getmany(
             timeout_ms=timeout_ms,
-            max_records=max_records,
+            max_records=requested_records,
         )
         unexpected = [
             key
@@ -174,8 +190,19 @@ class KafkaMarketEventBatchConsumer:
                     f"expected {expected}, received {decoded[0].offset}"
                 )
             self._next_expected_offset = decoded[-1].offset + 1
-            self._pending_commit_offset = self._next_expected_offset
-        return decoded
+        if self._exact_batch_size is None:
+            if decoded:
+                self._pending_commit_offset = self._next_expected_offset
+            return decoded
+        self._buffer.extend(decoded)
+        if len(self._buffer) < self._exact_batch_size:
+            return ()
+        if len(self._buffer) != self._exact_batch_size:
+            raise KafkaConsumerStateError("exact batch buffer exceeded its boundary")
+        result = tuple(self._buffer)
+        self._buffer.clear()
+        self._pending_commit_offset = self._next_expected_offset
+        return result
 
     async def commit_through(self, record: KafkaMarketEventRecord) -> None:
         if not isinstance(record, KafkaMarketEventRecord):

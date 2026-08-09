@@ -75,6 +75,7 @@ def test_server_phase_zero_has_all_frozen_contract_artifacts() -> None:
         SERVER_DOC_ROOT / "CANDLESCOPE_SERVER_ARCHITECTURE_zh.md",
         SERVER_DOC_ROOT / "CANDLESCOPE_SERVER_PHASE0_EXECUTION_zh.md",
         SERVER_DOC_ROOT / "contracts" / "market-event-envelope-v1.schema.json",
+        SERVER_DOC_ROOT / "contracts" / "market-data-manifest-v1.schema.json",
         SERVER_DOC_ROOT / "contracts" / "phase0-capacity-envelope-v1.json",
         SERVER_DOC_ROOT / "contracts" / "rfc8785-payload-golden-vectors-v1.json",
         BACKEND_ROOT / "scripts" / "verify_server_rfc8785_vectors.mjs",
@@ -91,7 +92,7 @@ def test_server_phase_zero_has_all_frozen_contract_artifacts() -> None:
 
 def test_server_json_contracts_parse_without_runtime_services() -> None:
     contract_paths = sorted((SERVER_DOC_ROOT / "contracts").glob("*.json"))
-    assert len(contract_paths) == 3
+    assert len(contract_paths) == 4
     for path in contract_paths:
         value = json.loads(
             path.read_text(encoding="utf-8"),

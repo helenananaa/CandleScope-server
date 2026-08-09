@@ -1,0 +1,49 @@
+name: candlescope-server-phase1d
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.14
+    command:
+      - redpanda
+      - start
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr=redpanda:33145
+      - --advertise-rpc-addr=redpanda:33145
+      - --mode=dev-container
+      - --smp=1
+      - --default-log-level=info
+    ports:
+      - "19092:19092"
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health --exit-when-healthy"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3.17.56
+    environment:
+      CLICKHOUSE_DB: candlescope
+      CLICKHOUSE_USER: candlescope
+      CLICKHOUSE_PASSWORD: phase1d-local-only
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "18123:8123"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          clickhouse-client --user candlescope --password phase1d-local-only
+          --query 'SELECT 1'
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+volumes:
+  clickhouse-data:
+  redpanda-data:

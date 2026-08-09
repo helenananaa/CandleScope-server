@@ -1,0 +1,129 @@
+{
+  "schema_version": "candlescope.server-phase1d-clickhouse-projection-verification.v1",
+  "captured_at_utc": "2026-08-09T02:48:53Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "4a7b5bb4b5be9481a42e03ab77c9db64488e973c",
+  "phase": "phase1d-replay-safe-clickhouse-projection",
+  "phase1d_passed": true,
+  "stream": {
+    "topic": "candlescope.market-events.v1",
+    "partition": 0,
+    "partition_key": "binance:futures:BTCUSDT@agg_trade",
+    "kafka_group_id_default": "candlescope-clickhouse-writer-v1"
+  },
+  "projection_contract": {
+    "durable_recovery_cursor": "Kafka consumer-group committed offset",
+    "consumer_auto_commit": false,
+    "consumer_isolation_level": "read_committed",
+    "new_group_required_start_offset": 0,
+    "cross_batch_offset_continuity_required": true,
+    "batch_order": [
+      "validate all records",
+      "insert ClickHouse facts and conflicts",
+      "commit Kafka last_offset + 1"
+    ],
+    "identity": [
+      "partition_key",
+      "event_id"
+    ],
+    "exact_replay_match": "full canonical envelope sha256 and bytes",
+    "identity_conflict_action": "quarantine conflict, preserve existing fact, advance Kafka offset, report degraded",
+    "schema_drift_fails_closed": true,
+    "shutdown_order": [
+      "Kafka consumer stop",
+      "ClickHouse projector stop"
+    ]
+  },
+  "clickhouse": {
+    "image": "clickhouse/clickhouse-server:26.3.17.56",
+    "fact_table": "market_event_fact_v1",
+    "conflict_table": "market_event_conflict_v1",
+    "engine": "ReplacingMergeTree",
+    "deterministic_insert_deduplication_token": true,
+    "verification_queries_use_final": true
+  },
+  "process_fault_gate": {
+    "infrastructure": [
+      "Redpanda 26.1.14",
+      "ClickHouse 26.3.17.56"
+    ],
+    "input_offsets": [
+      0,
+      1,
+      2,
+      3
+    ],
+    "input_semantics": [
+      "new fact sequence 42",
+      "exact replay of sequence 42",
+      "same event_id with divergent envelope",
+      "new fact sequence 43"
+    ],
+    "writer_a_fault": "process exit 97 after ClickHouse success and before Kafka commit",
+    "committed_next_offset_before_restart_was_not_4": true,
+    "writer_b_same_group_recovered": true,
+    "writer_b_sigterm_exit_code": 0,
+    "final_committed_next_offset": 4,
+    "final_fact_count": 2,
+    "final_fact_sequences": [
+      42,
+      43
+    ],
+    "final_fact_first_kafka_offsets": [
+      0,
+      3
+    ],
+    "final_conflict_count": 1,
+    "final_conflict_kafka_offset": 2
+  },
+  "gates": [
+    {
+      "name": "Phase 1A through 1D unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py",
+      "result": "41 passed"
+    },
+    {
+      "name": "Phase 1D two-process Redpanda and ClickHouse replay gate",
+      "command": "CANDLESCOPE_PHASE1D_INTEGRATION=1 CANDLESCOPE_PHASE1D_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1d_clickhouse.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1C two-process Redpanda and PostgreSQL takeover regression",
+      "command": "CANDLESCOPE_PHASE1C_INTEGRATION=1 CANDLESCOPE_PHASE1C_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1c_takeover.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1B lost-receipt process-fault regression",
+      "command": "CANDLESCOPE_PHASE1B_INTEGRATION=1 CANDLESCOPE_PHASE1B_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1b_redpanda.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 0 contracts and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1D runtime lint and format",
+      "command": "uvx ruff check and format --check on Phase 1D runtime, scripts, and tests",
+      "result": "passed"
+    },
+    {
+      "name": "dependency, compilation, Compose, JSON, and patch hygiene",
+      "result": "uv pip check passed for 66 packages; compileall passed; Compose config passed; evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "ClickHouse is the immutable long-term archive or rebuild authority",
+    "multiple streams, multiple partitions, or ClickHouse cluster topology are supported",
+    "24 hour public-exchange continuity, reconnect, node-restart, or capacity has passed",
+    "Kafka or ClickHouse TLS, SASL, production secrets, backup, and retention are configured",
+    "Parquet archive, manifest publication, snapshot query, HTTP, or WebSocket services are implemented",
+    "the FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

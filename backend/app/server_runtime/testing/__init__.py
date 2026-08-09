@@ -5,9 +5,11 @@ from .in_memory_event_log import (
     MarketEventIdentityConflictError,
 )
 from .in_memory_lease_store import InMemoryStreamLeaseStore
+from .in_memory_projector import InMemoryMarketEventProjector
 
 __all__ = [
     "InMemoryMarketEventLog",
+    "InMemoryMarketEventProjector",
     "InMemoryStreamLeaseStore",
     "MarketEventIdentityConflictError",
 ]

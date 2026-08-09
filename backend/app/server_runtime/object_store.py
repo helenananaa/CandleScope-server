@@ -24,6 +24,8 @@ class StoredObject:
 
 @runtime_checkable
 class ImmutableObjectStore(Protocol):
+    async def check_bucket(self) -> None: ...
+
     async def ensure_bucket(self) -> None: ...
 
     async def put_if_absent(

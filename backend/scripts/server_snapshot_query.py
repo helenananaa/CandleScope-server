@@ -1,0 +1,82 @@
+"""Standalone Phase 1F snapshot query HTTP service entrypoint."""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import uvicorn
+from app.server_runtime.query_api import create_snapshot_query_app
+from app.server_runtime.query_cursor import KafkaProjectionCursorReader
+from app.server_runtime.query_router import SnapshotQueryRouter
+from app.server_runtime.query_settings import QueryServiceSettings
+from app.server_runtime.storage.clickhouse_query import (
+    ClickHouseSnapshotMarketEventQuery,
+)
+from app.server_runtime.storage.parquet_archive import (
+    ImmutableParquetMarketEventArchive,
+    ParquetMarketEventQuery,
+)
+from app.server_runtime.storage.s3 import S3ImmutableObjectStore
+
+
+def build_app(settings: QueryServiceSettings):
+    store = S3ImmutableObjectStore(
+        endpoint_url=settings.s3_endpoint_url,
+        region=settings.s3_region,
+        bucket=settings.s3_bucket,
+        prefix=settings.s3_prefix,
+        access_key_id=settings.s3_access_key_id,
+        secret_access_key=settings.s3_secret_access_key,
+        request_timeout_ms=settings.s3_request_timeout_ms,
+    )
+    archive = ImmutableParquetMarketEventArchive(
+        object_store=store,
+        max_manifest_depth=settings.max_manifest_depth,
+    )
+    router = SnapshotQueryRouter(
+        cold_query=ParquetMarketEventQuery(
+            archive=archive,
+            max_page_rows=settings.max_page_rows,
+        ),
+        hot_query=ClickHouseSnapshotMarketEventQuery(
+            url=settings.clickhouse_url,
+            database=settings.clickhouse_database,
+            user=settings.clickhouse_user,
+            password=settings.clickhouse_password,
+            request_timeout_ms=settings.clickhouse_request_timeout_ms,
+            max_scan_rows=settings.max_scan_rows,
+            max_page_rows=settings.max_page_rows,
+        ),
+        projection_cursor=KafkaProjectionCursorReader(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            group_id=settings.clickhouse_writer_group_id,
+            client_id="candlescope-phase1f-query-cursor",
+            connection_options={
+                "request_timeout_ms": settings.kafka_request_timeout_ms,
+            },
+        ),
+    )
+    return create_snapshot_query_app(
+        router=router,
+        max_concurrent_queries=settings.max_concurrent_queries,
+        query_queue_timeout_ms=settings.query_queue_timeout_ms,
+    )
+
+
+def main() -> None:
+    logging.basicConfig(
+        level=os.environ.get("CANDLESCOPE_LOG_LEVEL", "INFO").upper(),
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    )
+    settings = QueryServiceSettings.from_env()
+    uvicorn.run(
+        build_app(settings),
+        host=settings.bind_host,
+        port=settings.bind_port,
+        log_level=os.environ.get("CANDLESCOPE_LOG_LEVEL", "INFO").lower(),
+    )
+
+
+if __name__ == "__main__":
+    main()

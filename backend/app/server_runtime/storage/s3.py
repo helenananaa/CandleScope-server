@@ -91,6 +91,14 @@ class S3ImmutableObjectStore:
         except (BotoCoreError, ClientError) as exc:
             raise ObjectStoreError("S3 bucket creation failed") from exc
 
+    async def check_bucket(self) -> None:
+        """Verify read access without creating or mutating the bucket."""
+
+        try:
+            await asyncio.to_thread(self._client.head_bucket, Bucket=self._bucket)
+        except (BotoCoreError, ClientError) as exc:
+            raise ObjectStoreError("S3 bucket readiness check failed") from exc
+
     async def put_if_absent(
         self,
         key: str,

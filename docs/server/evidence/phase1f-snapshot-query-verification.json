@@ -1,0 +1,129 @@
+{
+  "schema_version": "candlescope.server-phase1f-snapshot-query-verification.v1",
+  "captured_at_utc": "2026-08-09T03:35:13Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "f3564eb9f89eaab6969ab8ac0c11768b37d7c29b",
+  "phase": "phase1f-snapshot-hot-cold-query-proof",
+  "phase1f_passed": true,
+  "authority": {
+    "cold": "complete immutable Parquet manifest and object chain",
+    "hot": "ClickHouse market_event_fact_v1 FINAL",
+    "snapshot_cutoff": "first_kafka_offset < snapshot_version",
+    "hot_eligibility": "ClickHouse writer group committed next offset >= snapshot_version",
+    "hot_return_condition": "complete MarketEventPage exactly equals the verified cold page",
+    "parity_failure": "fail closed without fallback"
+  },
+  "canonical_fact_semantics": {
+    "identity": ["partition_key", "event_id"],
+    "winner": "first canonical envelope by Kafka partition and offset",
+    "exact_duplicate": "excluded from query facts",
+    "divergent_same_identity": "excluded from query facts while the first fact remains authoritative",
+    "canonicalization_scope": "complete requested manifest chain before time filtering",
+    "shared_hot_cold_pagination": true
+  },
+  "http_service": {
+    "standalone_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "query_route": "/api/v1/server/market-events/query",
+    "health_routes": ["/health/live", "/health/ready"],
+    "metrics_route": "/metrics",
+    "strict_unknown_field_rejection": true,
+    "preferences": ["auto", "hot", "cold"],
+    "overload_status": 429,
+    "hot_projection_behind_status": 409,
+    "parity_failure_status": 503,
+    "readiness_dependencies": [
+      "S3-compatible bucket read access without implicit creation",
+      "ClickHouse Phase 1D fact table",
+      "Kafka-compatible topic and observational consumer-group offset admin API"
+    ]
+  },
+  "real_infrastructure_gate": {
+    "infrastructure": [
+      "Redpanda 26.1.14",
+      "ClickHouse 26.3.17.56",
+      "MinIO RELEASE.2025-09-07T16-13-09Z",
+      "AIOKafka 0.14.0",
+      "AIOHTTP 3.13.3",
+      "Boto3 1.43.53",
+      "PyArrow 21.0.0",
+      "standalone Uvicorn process"
+    ],
+    "first_segment": {
+      "kafka_offsets": [0, 1, 2, 3],
+      "records": [
+        "original sequence 42",
+        "exact duplicate sequence 42",
+        "same-identity divergent sequence 42",
+        "following sequence 43"
+      ],
+      "clickhouse_projection": {
+        "inserted": 2,
+        "duplicates": 1,
+        "conflicts": 1,
+        "committed_next_offset": 4
+      },
+      "archive_snapshot_version": 4,
+      "http_auto_backend": "hot",
+      "http_parity_verified": true,
+      "returned_sequences": [42, 43]
+    },
+    "second_segment": {
+      "kafka_offsets": [4, 5, 6, 7],
+      "archive_snapshot_version": 8,
+      "clickhouse_committed_next_offset": 4,
+      "http_auto_backend": "cold",
+      "cold_page_sizes": [3, 3],
+      "returned_sequences": [42, 43, 44, 45, 46, 47],
+      "forced_hot_status": 409,
+      "forced_hot_code": "HOT_PROJECTION_BEHIND"
+    },
+    "query_process_sigint_exit_code": 0
+  },
+  "gates": [
+    {
+      "name": "Phase 1A through 1F unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py",
+      "result": "53 passed"
+    },
+    {
+      "name": "Phase 1F real HTTP hot parity and lagged cold route gate",
+      "command": "CANDLESCOPE_PHASE1F_INTEGRATION=1 CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1E Redpanda and MinIO immutable archive regression",
+      "command": "CANDLESCOPE_PHASE1E_INTEGRATION=1 CANDLESCOPE_PHASE1E_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1e_parquet_archive.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1F runtime lint and format",
+      "command": "uvx ruff check and format --check on all Phase 1F runtime, scripts, tests, and touched archive files",
+      "result": "passed"
+    },
+    {
+      "name": "dependency, compilation, Compose, JSON, and patch hygiene",
+      "result": "uv pip check passed; compileall passed; Phase 1F Compose config passed; evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "the standalone query service has production authentication or authorization",
+    "production TLS, secret management, ClickHouse quotas, S3 IAM, replication, backup, or disaster recovery are configured",
+    "proof-mode per-request hot/cold double reads have production query capacity",
+    "cold segment pruning, manifest compaction, caching, or multi-instance routing is implemented",
+    "24 hour public-exchange continuity, reconnect, node-restart, network-partition, or capacity has passed",
+    "WebSocket fan-out or Replay Worker snapshot integration is implemented",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

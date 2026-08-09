@@ -96,6 +96,8 @@ Phase 0 冻结边界，不强制一开始就部署大量微服务。Phase 1 可�
 
 ArchiveCommit 必须返回该快照引用、对象 URI/hash，以及按 MarketStreamKey.partition_key 汇总的事件时间、sequence 和数量覆盖范围。MarketEventQuery 必须接收完整快照引用，返回页也回显同一引用及本页覆盖范围；分页 cursor 必须绑定 manifest_sha256，跨快照复用时 fail closed。禁止以“当前最新”隐式替代调用方已经固定的快照。
 
+交互查询以不可变 Parquet 快照为正确性权威。只有 ClickHouse writer 消费组的 committed next offset 已覆盖请求的 snapshot_version，且同一请求的 ClickHouse 页与 Parquet 页逐项相等时，查询服务才可返回热结果；游标落后时 `auto` 必须走冷端，强制 `hot` 必须明确拒绝，任何热冷差异必须 fail closed。Phase 1F 的逐请求双读是正确性证明机制，不是最终容量方案。
+
 ### SQLite
 
 继续服务 personal Profile、测试和便携离线模式。服务器模式不得把 SQLite 放在共享写入或跨节点所有权路径上。

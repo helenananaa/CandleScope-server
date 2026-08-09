@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections.abc import Mapping
 from urllib.parse import quote, unquote, urlsplit
 
-from app.server_runtime.object_store import ObjectNotFoundError, StoredObject
+from app.server_runtime.object_store import (
+    ObjectNotFoundError,
+    ObjectStoreError,
+    StoredObject,
+)
 
 
 class InMemoryImmutableObjectStore:
@@ -16,6 +20,10 @@ class InMemoryImmutableObjectStore:
 
     async def ensure_bucket(self) -> None:
         self.bucket_ready = True
+
+    async def check_bucket(self) -> None:
+        if not self.bucket_ready:
+            raise ObjectStoreError("in-memory bucket is not ready")
 
     async def put_if_absent(
         self,

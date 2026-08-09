@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import re
@@ -37,8 +36,14 @@ from app.server_runtime.projection import (
     require_contiguous_records,
 )
 from app.server_runtime.publishers import canonical_envelope_bytes
+from app.server_runtime.query_pagination import (
+    SnapshotQueryCursorError,
+    SnapshotQueryIntegrityError,
+    SnapshotQueryRow,
+    canonical_fact_rows,
+    paginate_snapshot_rows,
+)
 
-MARKET_EVENT_CURSOR_SCHEMA_VERSION = "market-event-cursor.v1"
 _DATA_EPOCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _PARQUET_SCHEMA_DEFINITION = {
     "schema_version": MARKET_EVENT_PARQUET_SCHEMA_VERSION,
@@ -78,14 +83,6 @@ _ARROW_SCHEMA = pa.schema(
         b"candlescope.schema_sha256": PARQUET_SCHEMA_SHA256.encode("ascii"),
     },
 )
-_CURSOR_FIELDS = {
-    "schema_version",
-    "manifest_sha256",
-    "partition_key",
-    "start_event_time_ms",
-    "end_event_time_ms",
-    "next_index",
-}
 
 
 class ParquetArchiveError(RuntimeError):
@@ -98,6 +95,10 @@ class ParquetArchiveConflictError(ParquetArchiveError):
 
 class ParquetArchiveIntegrityError(ParquetArchiveError):
     """A manifest, Parquet object, or cursor failed integrity validation."""
+
+
+class ParquetArchiveCursorError(ParquetArchiveIntegrityError):
+    """A client cursor is malformed or bound to another snapshot."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +242,7 @@ class ImmutableParquetMarketEventArchive:
         self,
         *,
         object_store: ImmutableObjectStore,
-        segment_event_count: int,
+        segment_event_count: int = 10_000,
         max_manifest_depth: int = 100_000,
         codec: MarketEventParquetCodec | None = None,
     ) -> None:
@@ -260,6 +261,9 @@ class ImmutableParquetMarketEventArchive:
 
     async def initialize(self) -> None:
         await self._store.ensure_bucket()
+
+    async def check_ready(self) -> None:
+        await self._store.check_bucket()
 
     async def append_records(
         self,
@@ -525,6 +529,12 @@ class ParquetMarketEventQuery:
             field="max_page_rows",
         )
 
+    async def start(self) -> None:
+        await self._archive.check_ready()
+
+    async def stop(self) -> None:
+        return None
+
     async def query(
         self,
         *,
@@ -535,88 +545,36 @@ class ParquetMarketEventQuery:
         limit: int,
         cursor: MarketEventCursor | None = None,
     ) -> MarketEventPage:
-        if not isinstance(stream, MarketStreamKey):
-            raise TypeError("stream must be a MarketStreamKey")
-        start_event_time_ms = _non_negative_int(
-            start_event_time_ms,
-            field="start_event_time_ms",
-        )
-        end_event_time_ms = _non_negative_int(
-            end_event_time_ms,
-            field="end_event_time_ms",
-        )
-        if end_event_time_ms < start_event_time_ms:
-            raise ValueError("end_event_time_ms must not precede start_event_time_ms")
-        limit = _positive_int(limit, field="limit")
-        if limit > self._max_page_rows:
-            raise ValueError(f"limit cannot exceed {self._max_page_rows}")
-        start_index = _decode_cursor(
-            cursor,
-            snapshot=snapshot,
-            partition_key=stream.topic,
-            start_event_time_ms=start_event_time_ms,
-            end_event_time_ms=end_event_time_ms,
-        )
         manifests = await self._archive.load_chain(snapshot)
-        rows: list[ArchivedMarketEventRow] = []
+        rows: list[SnapshotQueryRow] = []
         for manifest in manifests:
-            segment = manifest.segment
-            if segment.partition_key != stream.topic:
-                continue
-            if (
-                segment.end_event_time_ms < start_event_time_ms
-                or segment.start_event_time_ms > end_event_time_ms
-            ):
-                continue
             segment_rows = await self._archive.load_segment_rows(manifest)
             rows.extend(
-                row
+                SnapshotQueryRow(
+                    envelope=row.envelope,
+                    envelope_sha256=row.envelope_sha256,
+                    envelope_bytes=canonical_envelope_bytes(row.envelope),
+                    kafka_partition=row.kafka_partition,
+                    kafka_offset=row.kafka_offset,
+                )
                 for row in segment_rows
-                if start_event_time_ms
-                <= row.envelope.event_time_ms
-                <= end_event_time_ms
             )
-        rows.sort(
-            key=lambda row: (
-                row.envelope.event_time_ms,
-                row.kafka_partition,
-                row.kafka_offset,
-            )
-        )
-        coordinates = [(row.kafka_partition, row.kafka_offset) for row in rows]
-        if len(coordinates) != len(set(coordinates)):
-            raise ParquetArchiveIntegrityError(
-                "snapshot contains duplicate Kafka coordinates"
-            )
-        if start_index > len(rows):
-            raise ParquetArchiveIntegrityError(
-                "cursor points beyond the immutable query result"
-            )
-        page_rows = rows[start_index : start_index + limit]
-        next_index = start_index + len(page_rows)
-        next_cursor = (
-            _encode_cursor(
+        try:
+            facts = canonical_fact_rows(rows)
+            return paginate_snapshot_rows(
+                facts.rows,
                 snapshot=snapshot,
-                partition_key=stream.topic,
+                stream=stream,
                 start_event_time_ms=start_event_time_ms,
                 end_event_time_ms=end_event_time_ms,
-                next_index=next_index,
+                limit=limit,
+                max_page_rows=self._max_page_rows,
+                cursor=cursor,
             )
-            if next_index < len(rows)
-            else None
-        )
-        events = tuple(row.envelope for row in page_rows)
-        covered_range = _range_for_rows(
-            partition_key=stream.topic,
-            events=events,
-            empty_bounds=(start_event_time_ms, end_event_time_ms),
-        )
-        return MarketEventPage(
-            snapshot=snapshot,
-            events=events,
-            covered_range=covered_range,
-            next_cursor=next_cursor,
-        )
+        except SnapshotQueryCursorError as exc:
+            raise ParquetArchiveCursorError(str(exc)) from exc
+        except SnapshotQueryIntegrityError as exc:
+            raise ParquetArchiveIntegrityError(str(exc)) from exc
 
 
 def manifest_key(data_epoch: str, snapshot_version: int) -> str:
@@ -750,71 +708,6 @@ def _range_for_rows(
             else None
         ),
     )
-
-
-def _encode_cursor(
-    *,
-    snapshot: MarketDataSnapshotRef,
-    partition_key: str,
-    start_event_time_ms: int,
-    end_event_time_ms: int,
-    next_index: int,
-) -> MarketEventCursor:
-    wire = {
-        "schema_version": MARKET_EVENT_CURSOR_SCHEMA_VERSION,
-        "manifest_sha256": snapshot.manifest_sha256,
-        "partition_key": partition_key,
-        "start_event_time_ms": start_event_time_ms,
-        "end_event_time_ms": end_event_time_ms,
-        "next_index": next_index,
-    }
-    value = base64.urlsafe_b64encode(rfc8785.dumps(wire)).decode("ascii").rstrip("=")
-    return MarketEventCursor(
-        value=value,
-        manifest_sha256=snapshot.manifest_sha256,
-    )
-
-
-def _decode_cursor(
-    cursor: MarketEventCursor | None,
-    *,
-    snapshot: MarketDataSnapshotRef,
-    partition_key: str,
-    start_event_time_ms: int,
-    end_event_time_ms: int,
-) -> int:
-    if cursor is None:
-        return 0
-    if not isinstance(cursor, MarketEventCursor):
-        raise TypeError("cursor must be a MarketEventCursor")
-    if cursor.manifest_sha256 != snapshot.manifest_sha256:
-        raise ParquetArchiveIntegrityError("cursor belongs to another manifest")
-    try:
-        padding = "=" * (-len(cursor.value) % 4)
-        raw = base64.b64decode(
-            cursor.value + padding,
-            altchars=b"-_",
-            validate=True,
-        )
-        wire = json.loads(raw.decode("utf-8"))
-        if not isinstance(wire, dict) or set(wire) != _CURSOR_FIELDS:
-            raise ValueError("cursor fields drifted")
-        if rfc8785.dumps(wire) != raw:
-            raise ValueError("cursor is not canonical")
-    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
-        raise ParquetArchiveIntegrityError("cursor is malformed") from exc
-    expected = {
-        "schema_version": MARKET_EVENT_CURSOR_SCHEMA_VERSION,
-        "manifest_sha256": snapshot.manifest_sha256,
-        "partition_key": partition_key,
-        "start_event_time_ms": start_event_time_ms,
-        "end_event_time_ms": end_event_time_ms,
-    }
-    if any(wire.get(name) != value for name, value in expected.items()):
-        raise ParquetArchiveIntegrityError(
-            "cursor query binding does not match the request"
-        )
-    return _non_negative_int(wire.get("next_index"), field="cursor.next_index")
 
 
 def _data_epoch(value: object) -> str:

@@ -31,6 +31,10 @@ from app.server_runtime.query_router import (
     QueryPreference,
     SnapshotQueryRouter,
 )
+from app.server_runtime.query_security import (
+    BearerTokenAuthenticator,
+    QueryAuditEvent,
+)
 from app.server_runtime.query_settings import (
     QueryServiceConfigurationError,
     QueryServiceSettings,
@@ -152,6 +156,14 @@ class _FakeCursor:
         return self.value
 
 
+class _AuditSink:
+    def __init__(self) -> None:
+        self.events: list[QueryAuditEvent] = []
+
+    async def emit(self, event: QueryAuditEvent) -> None:
+        self.events.append(event)
+
+
 def test_cold_query_applies_first_fact_duplicate_and_conflict_semantics() -> None:
     async def run() -> None:
         original = _envelope(42)
@@ -233,8 +245,14 @@ def test_query_http_boundary_is_strict_and_reports_route_metrics() -> None:
             hot_query=_FakeQuery(page),
             projection_cursor=_FakeCursor(4),
         )
+        audit = _AuditSink()
         app = create_snapshot_query_app(
             router=router,
+            authenticator=BearerTokenAuthenticator(
+                token="phase1g-test-token-0000000000000000",
+                principal="test-gateway",
+            ),
+            audit_sink=audit,
             max_concurrent_queries=2,
             query_queue_timeout_ms=100,
         )
@@ -263,18 +281,32 @@ def test_query_http_boundary_is_strict_and_reports_route_metrics() -> None:
             response = await client.post(
                 "/api/v1/server/market-events/query",
                 json=body,
+                headers={
+                    "Authorization": ("Bearer phase1g-test-token-0000000000000000")
+                },
             )
-            assert response.status_code == 200
+            assert response.status_code == 200, response.text
             assert response.json()["backend"] == "hot"
             assert response.json()["parity_verified"] is True
             invalid = await client.post(
                 "/api/v1/server/market-events/query",
                 json={**body, "unknown": True},
+                headers={
+                    "Authorization": ("Bearer phase1g-test-token-0000000000000000")
+                },
             )
             assert invalid.status_code == 422
-            metrics = (await client.get("/metrics")).json()
+            metrics = (
+                await client.get(
+                    "/metrics",
+                    headers={
+                        "Authorization": ("Bearer phase1g-test-token-0000000000000000")
+                    },
+                )
+            ).json()
             assert metrics["requests_total"] == 1
             assert metrics["hot_responses_total"] == 1
+            assert audit.events[0].outcome == "success"
 
     asyncio.run(run())
 
@@ -356,6 +388,8 @@ def test_clickhouse_query_validates_canonical_rows_and_snapshot_cutoff() -> None
         )
         assert page.events == (envelope,)
         assert sessions[0].calls[2]["params"]["param_snapshot_version"] == "4"
+        assert sessions[0].calls[2]["params"]["readonly"] == "2"
+        assert sessions[0].calls[2]["params"]["max_result_rows"] == "100001"
         await query.stop()
         assert sessions[0].closed is True
 
@@ -423,11 +457,15 @@ def test_projection_cursor_reader_is_observational_and_settings_redact_secrets()
         "CANDLESCOPE_SERVER_QUERY_S3_BUCKET": "candlescope-archive",
         "CANDLESCOPE_SERVER_QUERY_S3_ACCESS_KEY_ID": "minio-access",
         "CANDLESCOPE_SERVER_QUERY_S3_SECRET_ACCESS_KEY": "minio-secret",
+        "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": (
+            "phase1g-settings-token-000000000000"
+        ),
     }
     settings = QueryServiceSettings.from_env(environment)
     assert "clickhouse-secret" not in repr(settings)
     assert "minio-access" not in repr(settings)
     assert "minio-secret" not in repr(settings)
+    assert "phase1g-settings-token" not in repr(settings)
     with pytest.raises(QueryServiceConfigurationError, match="S3_BUCKET"):
         QueryServiceSettings.from_env(
             {key: value for key, value in environment.items() if "S3_BUCKET" not in key}

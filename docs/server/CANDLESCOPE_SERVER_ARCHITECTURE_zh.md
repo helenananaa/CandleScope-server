@@ -98,6 +98,8 @@ ArchiveCommit 必须返回该快照引用、对象 URI/hash，以及按 MarketSt
 
 交互查询以不可变 Parquet 快照为正确性权威。只有 ClickHouse writer 消费组的 committed next offset 已覆盖请求的 snapshot_version，且同一请求的 ClickHouse 页与 Parquet 页逐项相等时，查询服务才可返回热结果；游标落后时 `auto` 必须走冷端，强制 `hot` 必须明确拒绝，任何热冷差异必须 fail closed。Phase 1F 的逐请求双读是正确性证明机制，不是最终容量方案。
 
+查询服务只能由已认证的内部入口调用，并为认证拒绝、请求校验和每次查询生成不含凭据与行情 payload 的结构化审计事件。成功热查询登记为不可变后台 parity probe；任一前台或后台热冷页不一致会锁存热端 quarantine，在进程重启或人工处置前不得自动恢复。冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。
+
 ### SQLite
 
 继续服务 personal Profile、测试和便携离线模式。服务器模式不得把 SQLite 放在共享写入或跨节点所有权路径上。

@@ -54,6 +54,10 @@ class ClickHouseSnapshotMarketEventQuery:
         request_timeout_ms: int = 10_000,
         max_scan_rows: int = 100_000,
         max_page_rows: int = 1_000,
+        max_execution_time_ms: int = 5_000,
+        max_memory_usage_bytes: int = 268_435_456,
+        max_bytes_to_read: int = 536_870_912,
+        max_threads: int = 4,
         session_factory: Any = aiohttp.ClientSession,
     ) -> None:
         parsed = urlsplit(url)
@@ -71,6 +75,19 @@ class ClickHouseSnapshotMarketEventQuery:
         )
         self._max_scan_rows = _positive_int(max_scan_rows, field="max_scan_rows")
         self._max_page_rows = _positive_int(max_page_rows, field="max_page_rows")
+        self._max_execution_time_ms = _positive_int(
+            max_execution_time_ms,
+            field="max_execution_time_ms",
+        )
+        self._max_memory_usage_bytes = _positive_int(
+            max_memory_usage_bytes,
+            field="max_memory_usage_bytes",
+        )
+        self._max_bytes_to_read = _positive_int(
+            max_bytes_to_read,
+            field="max_bytes_to_read",
+        )
+        self._max_threads = _positive_int(max_threads, field="max_threads")
         self._session_factory = session_factory
         self._session: aiohttp.ClientSession | None = None
 
@@ -188,6 +205,14 @@ class ClickHouseSnapshotMarketEventQuery:
                 "snapshot_version": snapshot.snapshot_version,
                 "scan_limit": self._max_scan_rows + 1,
             },
+            settings={
+                "max_execution_time": _seconds(self._max_execution_time_ms),
+                "max_result_rows": str(self._max_scan_rows + 1),
+                "result_overflow_mode": "throw",
+                "max_memory_usage": str(self._max_memory_usage_bytes),
+                "max_bytes_to_read": str(self._max_bytes_to_read),
+                "max_threads": str(self._max_threads),
+            },
         )
         raw_rows = _json_each_row(response)
         if len(raw_rows) > self._max_scan_rows:
@@ -253,13 +278,15 @@ class ClickHouseSnapshotMarketEventQuery:
         *,
         database: str | None = "default",
         parameters: Mapping[str, object] | None = None,
+        settings: Mapping[str, str] | None = None,
     ) -> str:
-        request_parameters = {"query": query.strip()}
+        request_parameters = {"query": query.strip(), "readonly": "2"}
         selected_database = self._database if database == "default" else database
         if selected_database is not None:
             request_parameters["database"] = selected_database
         for name, value in (parameters or {}).items():
             request_parameters[f"param_{name}"] = str(value)
+        request_parameters.update(settings or {})
         try:
             async with session.post(
                 self._url,
@@ -331,3 +358,8 @@ def _clickhouse_uint(value: object, *, field: str) -> int:
     if isinstance(value, str) and value and value.isascii() and value.isdecimal():
         return int(value)
     raise TypeError(f"{field} must be an unsigned integer")
+
+
+def _seconds(milliseconds: int) -> str:
+    seconds = milliseconds / 1_000
+    return f"{seconds:.3f}".rstrip("0").rstrip(".")

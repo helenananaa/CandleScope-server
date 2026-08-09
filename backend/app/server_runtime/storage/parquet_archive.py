@@ -545,9 +545,13 @@ class ParquetMarketEventQuery:
         limit: int,
         cursor: MarketEventCursor | None = None,
     ) -> MarketEventPage:
+        if not isinstance(stream, MarketStreamKey):
+            raise TypeError("stream must be a MarketStreamKey")
         manifests = await self._archive.load_chain(snapshot)
         rows: list[SnapshotQueryRow] = []
         for manifest in manifests:
+            if manifest.segment.partition_key != stream.topic:
+                continue
             segment_rows = await self._archive.load_segment_rows(manifest)
             rows.extend(
                 SnapshotQueryRow(

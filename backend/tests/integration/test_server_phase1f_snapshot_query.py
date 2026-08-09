@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import signal
 import sys
@@ -17,8 +18,15 @@ from app.data_engine.ingestion.models import DataSource, MarketEvent, StreamType
 from app.server_runtime.adapters import AggTradeEnvelopeAdapter
 from app.server_runtime.consumers import KafkaMarketEventBatchConsumer
 from app.server_runtime.producer_identity import ProducerIdentity
-from app.server_runtime.publishers import MARKET_EVENTS_TOPIC, KafkaMarketEventPublisher
-from app.server_runtime.storage.clickhouse import ClickHouseMarketEventProjector
+from app.server_runtime.publishers import (
+    MARKET_EVENTS_TOPIC,
+    KafkaMarketEventPublisher,
+    canonical_envelope_bytes,
+)
+from app.server_runtime.storage.clickhouse import (
+    MARKET_EVENT_FACT_TABLE,
+    ClickHouseMarketEventProjector,
+)
 from app.server_runtime.storage.parquet_archive import (
     ImmutableParquetMarketEventArchive,
 )
@@ -37,17 +45,25 @@ S3_ACCESS_KEY_ID = "candlescope"
 S3_SECRET_ACCESS_KEY = "phase1f-local-secret"
 DATA_EPOCH = "phase1f-query-epoch"
 QUERY_URL = "http://127.0.0.1:18110"
+QUERY_AUTH_TOKEN = "phase1g-integration-token-000000000000"
 SEGMENT_EVENT_COUNT = 4
 QUERY_SCRIPT = Path(__file__).resolve().parents[2] / "scripts/server_snapshot_query.py"
 
-pytestmark = pytest.mark.skipif(
+
+@pytest.mark.skipif(
     os.environ.get("CANDLESCOPE_PHASE1F_INTEGRATION") != "1",
     reason="requires the explicit Phase 1F Redpanda/ClickHouse/MinIO stack",
 )
-
-
 def test_real_http_hot_parity_and_lagged_cold_route() -> None:
     asyncio.run(_run_gate())
+
+
+@pytest.mark.skipif(
+    os.environ.get("CANDLESCOPE_PHASE1G_INTEGRATION") != "1",
+    reason="requires the explicit Phase 1G query-hardening stack",
+)
+def test_real_auth_quota_background_parity_and_hot_quarantine() -> None:
+    asyncio.run(_run_hardening_gate())
 
 
 async def _run_gate() -> None:
@@ -119,6 +135,52 @@ async def _run_gate() -> None:
         assert forced_hot[1]["detail"]["code"] == "HOT_PROJECTION_BEHIND"
     finally:
         await _terminate_process(process)
+
+
+async def _run_hardening_gate() -> None:
+    _require_explicit_local_reset()
+    await _reset_topic()
+    await _reset_clickhouse()
+    await _reset_bucket()
+    clickhouse_group = f"phase1g-clickhouse-{uuid.uuid4()}"
+    archive_group = f"phase1g-archive-{uuid.uuid4()}"
+    original = _envelope(42)
+    conflict = _envelope(42, quantity="0.03000000")
+    following = _envelope(43)
+    await _publish((original, original, conflict, following))
+    await _project_clickhouse(clickhouse_group)
+    snapshot = await _archive_segment(archive_group)
+    process = await _start_query_service(clickhouse_group)
+    process_output = ("", "")
+    try:
+        await _wait_ready(process)
+        unauthorized = await _query_without_auth(snapshot, original)
+        assert unauthorized[0] == 401
+        assert unauthorized[1]["detail"]["code"] == "QUERY_AUTHENTICATION_REQUIRED"
+        hot = await _query(snapshot, original, preference="auto", limit=10)
+        assert hot[0] == 200
+        assert hot[1]["backend"] == "hot"
+        await _wait_for_metrics(
+            lambda value: value["parity"]["samples_passed"] >= 1,
+            timeout=5,
+        )
+
+        await _replace_hot_envelope(conflict)
+        quarantined_metrics = await _wait_for_metrics(
+            lambda value: value["parity"]["hot_quarantined"] is True,
+            timeout=5,
+        )
+        assert quarantined_metrics["parity"]["samples_failed"] >= 1
+        fallback = await _query(snapshot, original, preference="auto", limit=10)
+        assert fallback[0] == 200
+        assert fallback[1]["backend"] == "cold"
+        assert fallback[1]["hot_quarantined"] is True
+        forced_hot = await _query(snapshot, original, preference="hot", limit=10)
+        assert forced_hot[0] == 503
+        assert forced_hot[1]["detail"]["code"] == "HOT_PROJECTION_QUARANTINED"
+    finally:
+        process_output = await _terminate_process(process)
+    assert "snapshot_query_audit=" in process_output[1]
 
 
 def _market_event(sequence: int, *, quantity: str = "0.02500000") -> MarketEvent:
@@ -254,9 +316,61 @@ async def _query(
         session.post(
             f"{QUERY_URL}/api/v1/server/market-events/query",
             json=body,
+            headers={"Authorization": f"Bearer {QUERY_AUTH_TOKEN}"},
         ) as response,
     ):
         return response.status, await response.json()
+
+
+async def _query_without_auth(
+    snapshot: Any,
+    envelope: Any,
+) -> tuple[int, dict[str, Any]]:
+    body = {
+        "snapshot": {
+            "data_epoch": snapshot.data_epoch,
+            "snapshot_version": snapshot.snapshot_version,
+            "manifest_uri": snapshot.manifest_uri,
+            "manifest_sha256": snapshot.manifest_sha256,
+        },
+        "stream": envelope.stream.to_dict(),
+        "start_event_time_ms": 0,
+        "end_event_time_ms": 2_000_000_000_000,
+        "limit": 10,
+        "preference": "auto",
+    }
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(
+            f"{QUERY_URL}/api/v1/server/market-events/query",
+            json=body,
+        ) as response,
+    ):
+        return response.status, await response.json()
+
+
+async def _metrics() -> dict[str, Any]:
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{QUERY_URL}/metrics",
+            headers={"Authorization": f"Bearer {QUERY_AUTH_TOKEN}"},
+        ) as response,
+    ):
+        body = await response.json()
+        assert response.status == 200, body
+        return body
+
+
+async def _wait_for_metrics(predicate: Any, *, timeout: float) -> dict[str, Any]:
+    deadline = asyncio.get_running_loop().time() + timeout
+    last: dict[str, Any] | None = None
+    while asyncio.get_running_loop().time() < deadline:
+        last = await _metrics()
+        if predicate(last):
+            return last
+        await asyncio.sleep(0.05)
+    raise TimeoutError(f"query metrics predicate failed; last value: {last}")
 
 
 def _store() -> S3ImmutableObjectStore:
@@ -282,19 +396,45 @@ async def _reset_clickhouse() -> None:
 
 
 async def _execute_clickhouse(query: str) -> None:
-    async with (
-        aiohttp.ClientSession() as session,
-        session.post(
-            CLICKHOUSE_URL,
-            params={"query": query},
-            headers={
-                "X-ClickHouse-User": CLICKHOUSE_USER,
-                "X-ClickHouse-Key": CLICKHOUSE_PASSWORD,
-            },
-        ) as response,
-    ):
-        body = await response.text()
-        assert response.status == 200, body
+    for attempt in range(20):
+        try:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.post(
+                    CLICKHOUSE_URL,
+                    params={"query": query},
+                    headers={
+                        "X-ClickHouse-User": CLICKHOUSE_USER,
+                        "X-ClickHouse-Key": CLICKHOUSE_PASSWORD,
+                    },
+                ) as response,
+            ):
+                body = await response.text()
+                assert response.status == 200, body
+                return
+        except aiohttp.ClientError:
+            if attempt == 19:
+                raise
+            await asyncio.sleep(0.1)
+
+
+async def _replace_hot_envelope(envelope: Any) -> None:
+    envelope_bytes = canonical_envelope_bytes(envelope)
+    envelope_sha256 = hashlib.sha256(envelope_bytes).hexdigest()
+    await _execute_clickhouse(
+        f"""
+        ALTER TABLE `{CLICKHOUSE_DATABASE}`.`{MARKET_EVENT_FACT_TABLE}`
+        UPDATE
+          envelope_sha256 = {_clickhouse_quote(envelope_sha256)},
+          envelope_json = {_clickhouse_quote(envelope_bytes.decode("utf-8"))}
+        WHERE event_id = {_clickhouse_quote(envelope.event_id)}
+        SETTINGS mutations_sync = 2
+        """
+    )
+
+
+def _clickhouse_quote(value: str) -> str:
+    return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _s3_client() -> Any:
@@ -359,10 +499,13 @@ async def _start_query_service(group_id: str) -> asyncio.subprocess.Process:
             "CANDLESCOPE_SERVER_QUERY_S3_PREFIX": S3_PREFIX,
             "CANDLESCOPE_SERVER_QUERY_S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
             "CANDLESCOPE_SERVER_QUERY_S3_SECRET_ACCESS_KEY": S3_SECRET_ACCESS_KEY,
+            "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": QUERY_AUTH_TOKEN,
             "CANDLESCOPE_SERVER_QUERY_BIND_HOST": "127.0.0.1",
             "CANDLESCOPE_SERVER_QUERY_BIND_PORT": "18110",
             "CANDLESCOPE_SERVER_QUERY_MAX_PAGE_ROWS": "10",
             "CANDLESCOPE_SERVER_QUERY_MAX_SCAN_ROWS": "100",
+            "CANDLESCOPE_SERVER_QUERY_PARITY_SAMPLE_INTERVAL_MS": "50",
+            "CANDLESCOPE_SERVER_QUERY_PARITY_PROBE_CAPACITY": "8",
             "CANDLESCOPE_LOG_LEVEL": "WARNING",
         }
     )
@@ -396,21 +539,28 @@ async def _wait_ready(process: asyncio.subprocess.Process) -> None:
     raise TimeoutError("query service did not become ready")
 
 
-async def _terminate_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    process.send_signal(signal.SIGINT)
-    try:
-        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-    except TimeoutError:
-        process.kill()
+async def _terminate_process(
+    process: asyncio.subprocess.Process,
+) -> tuple[str, str]:
+    if process.returncode is None:
+        process.send_signal(signal.SIGINT)
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
+        except TimeoutError:
+            process.kill()
+            stdout, stderr = await process.communicate()
+    else:
         stdout, stderr = await process.communicate()
     assert process.returncode == 0, (stdout.decode(), stderr.decode())
+    return stdout.decode(), stderr.decode()
 
 
 def _require_explicit_local_reset() -> None:
-    if os.environ.get("CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET") != "1":
+    if (
+        os.environ.get("CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET") != "1"
+        and os.environ.get("CANDLESCOPE_PHASE1G_ALLOW_TEST_RESET") != "1"
+    ):
         raise RuntimeError(
-            "CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET=1 is required because the "
+            "an explicit Phase 1F/1G reset flag is required because the "
             "integration gate rebuilds its local topic, database, and bucket"
         )

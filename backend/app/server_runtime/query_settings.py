@@ -1,4 +1,4 @@
-"""Strict standalone settings for the Phase 1F snapshot query service."""
+"""Strict standalone settings for the Phase 1G snapshot query service."""
 
 from __future__ import annotations
 
@@ -25,8 +25,10 @@ class QueryServiceSettings:
     s3_bucket: str
     s3_access_key_id: str = field(repr=False)
     s3_secret_access_key: str = field(repr=False)
+    auth_bearer_token: str = field(repr=False)
     clickhouse_database: str = "candlescope"
     clickhouse_writer_group_id: str = DEFAULT_GROUP_ID
+    auth_principal: str = "candlescope-api-gateway"
     s3_region: str = "us-east-1"
     s3_prefix: str = "market-data"
     bind_host: str = "127.0.0.1"
@@ -37,8 +39,14 @@ class QueryServiceSettings:
     max_concurrent_queries: int = 16
     query_queue_timeout_ms: int = 1_000
     clickhouse_request_timeout_ms: int = 10_000
+    clickhouse_max_execution_time_ms: int = 5_000
+    clickhouse_max_memory_usage_bytes: int = 268_435_456
+    clickhouse_max_bytes_to_read: int = 536_870_912
+    clickhouse_max_threads: int = 4
     s3_request_timeout_ms: int = 10_000
     kafka_request_timeout_ms: int = 10_000
+    parity_sample_interval_ms: int = 30_000
+    parity_probe_capacity: int = 128
 
     def __post_init__(self) -> None:
         if not isinstance(self.kafka_bootstrap_servers, tuple):
@@ -60,6 +68,7 @@ class QueryServiceSettings:
             "clickhouse_password",
             "clickhouse_database",
             "clickhouse_writer_group_id",
+            "auth_principal",
             "s3_endpoint_url",
             "s3_region",
             "s3_bucket",
@@ -72,6 +81,12 @@ class QueryServiceSettings:
                 name,
                 _required_text(getattr(self, name), field=name),
             )
+        token = _required_text(self.auth_bearer_token, field="auth_bearer_token")
+        if len(token) < 32:
+            raise QueryServiceConfigurationError(
+                "auth_bearer_token must contain at least 32 characters"
+            )
+        object.__setattr__(self, "auth_bearer_token", token)
         if not isinstance(self.s3_prefix, str):
             raise QueryServiceConfigurationError("s3_prefix must be a string")
         object.__setattr__(self, "s3_prefix", self.s3_prefix.strip("/"))
@@ -83,8 +98,14 @@ class QueryServiceSettings:
             "max_concurrent_queries",
             "query_queue_timeout_ms",
             "clickhouse_request_timeout_ms",
+            "clickhouse_max_execution_time_ms",
+            "clickhouse_max_memory_usage_bytes",
+            "clickhouse_max_bytes_to_read",
+            "clickhouse_max_threads",
             "s3_request_timeout_ms",
             "kafka_request_timeout_ms",
+            "parity_sample_interval_ms",
+            "parity_probe_capacity",
         ):
             _positive_int(getattr(self, name), field=name)
         if self.bind_port > 65_535:
@@ -125,6 +146,11 @@ class QueryServiceSettings:
             s3_prefix=values.get(f"{ENV_PREFIX}S3_PREFIX", "market-data"),
             s3_access_key_id=_required_env(values, "S3_ACCESS_KEY_ID"),
             s3_secret_access_key=_required_env(values, "S3_SECRET_ACCESS_KEY"),
+            auth_bearer_token=_required_env(values, "AUTH_BEARER_TOKEN"),
+            auth_principal=values.get(
+                f"{ENV_PREFIX}AUTH_PRINCIPAL",
+                "candlescope-api-gateway",
+            ),
             bind_host=values.get(f"{ENV_PREFIX}BIND_HOST", "127.0.0.1"),
             bind_port=_optional_int(values, "BIND_PORT", 8110),
             max_page_rows=_optional_int(values, "MAX_PAGE_ROWS", 1_000),
@@ -149,6 +175,26 @@ class QueryServiceSettings:
                 "CLICKHOUSE_REQUEST_TIMEOUT_MS",
                 10_000,
             ),
+            clickhouse_max_execution_time_ms=_optional_int(
+                values,
+                "CLICKHOUSE_MAX_EXECUTION_TIME_MS",
+                5_000,
+            ),
+            clickhouse_max_memory_usage_bytes=_optional_int(
+                values,
+                "CLICKHOUSE_MAX_MEMORY_USAGE_BYTES",
+                268_435_456,
+            ),
+            clickhouse_max_bytes_to_read=_optional_int(
+                values,
+                "CLICKHOUSE_MAX_BYTES_TO_READ",
+                536_870_912,
+            ),
+            clickhouse_max_threads=_optional_int(
+                values,
+                "CLICKHOUSE_MAX_THREADS",
+                4,
+            ),
             s3_request_timeout_ms=_optional_int(
                 values,
                 "S3_REQUEST_TIMEOUT_MS",
@@ -158,6 +204,16 @@ class QueryServiceSettings:
                 values,
                 "KAFKA_REQUEST_TIMEOUT_MS",
                 10_000,
+            ),
+            parity_sample_interval_ms=_optional_int(
+                values,
+                "PARITY_SAMPLE_INTERVAL_MS",
+                30_000,
+            ),
+            parity_probe_capacity=_optional_int(
+                values,
+                "PARITY_PROBE_CAPACITY",
+                128,
             ),
         )
 

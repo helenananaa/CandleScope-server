@@ -1,0 +1,144 @@
+{
+  "schema_version": "candlescope.server-phase1g-query-hardening-verification.v1",
+  "captured_at_utc": "2026-08-09T03:54:04Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "5ba44c4ad3433b177e65974d10f97b266328615a",
+  "phase": "phase1g-auth-audit-quota-parity-quarantine",
+  "phase1g_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false
+  },
+  "internal_authentication": {
+    "protected_routes": [
+      "POST /api/v1/server/market-events/query",
+      "GET /metrics"
+    ],
+    "public_probe_routes": ["GET /health/live", "GET /health/ready"],
+    "scheme": "Bearer",
+    "minimum_token_characters": 32,
+    "comparison": "constant-time",
+    "principal_source": "server configuration only",
+    "unauthorized_status": 401,
+    "request_id": "safe ASCII X-Request-ID up to 128 characters or generated UUID",
+    "bounded_request_fields": true,
+    "snapshot_and_event_time_integer_bound": "UInt64"
+  },
+  "audit": {
+    "schema_version": "candlescope.snapshot-query-audit.v1",
+    "events": [
+      "invalid request ID",
+      "authentication denial",
+      "request validation denial",
+      "query success or terminal failure"
+    ],
+    "recorded_fields": [
+      "request_id",
+      "configured internal principal",
+      "action and outcome",
+      "HTTP status and latency",
+      "snapshot version and manifest SHA-256",
+      "partition key, preference, and selected backend"
+    ],
+    "forbidden_fields": [
+      "bearer token",
+      "ClickHouse or S3 credentials",
+      "market event envelope",
+      "market event payload"
+    ],
+    "default_sink": "structured single-line JSON logging for external collection",
+    "sink_failure_status": 503
+  },
+  "clickhouse_request_limits": {
+    "readonly": 2,
+    "max_execution_time_ms": 5000,
+    "max_result_rows": "max_scan_rows + 1",
+    "result_overflow_mode": "throw",
+    "max_memory_usage_bytes": 268435456,
+    "max_bytes_to_read": 536870912,
+    "max_threads": 4,
+    "client_cannot_override": true
+  },
+  "cold_pruning": {
+    "safe_prune": "segments whose partition_key differs from the requested logical stream",
+    "same_stream_time_pruning": false,
+    "reason": "earlier same-stream segments may define the first fact for a later duplicate or conflict"
+  },
+  "background_parity": {
+    "probe_source": "foreground hot queries with exact immutable cold-page parity",
+    "implicit_latest": false,
+    "default_interval_ms": 30000,
+    "default_probe_capacity": 128,
+    "cursor_lag_behavior": "skip sample",
+    "transient_backend_error_behavior": "record failed sample without declaring a data mismatch",
+    "explicit_page_mismatch_behavior": "latch hot quarantine",
+    "quarantine_auto_route": "cold",
+    "quarantine_forced_hot_status": 503,
+    "automatic_unquarantine": false
+  },
+  "real_infrastructure_gate": {
+    "infrastructure": [
+      "Redpanda 26.1.14",
+      "ClickHouse 26.3.17.56",
+      "MinIO RELEASE.2025-09-07T16-13-09Z",
+      "standalone Uvicorn query process"
+    ],
+    "snapshot_version": 4,
+    "clickhouse_committed_next_offset": 4,
+    "unauthenticated_query_status": 401,
+    "authenticated_hot_query_passed": true,
+    "structured_audit_line_observed_in_process_stderr": true,
+    "fixed_clickhouse_limits_accepted_by_real_server": true,
+    "background_probe_passed_before_mutation": true,
+    "fault_injection": "replace ClickHouse envelope JSON and SHA-256 with a different internally canonical same-identity envelope",
+    "background_mismatch_detected": true,
+    "hot_quarantine_latched": true,
+    "auto_after_quarantine": "cold",
+    "forced_hot_after_quarantine_status": 503,
+    "query_process_sigint_exit_code": 0
+  },
+  "gates": [
+    {
+      "name": "Phase 1A through 1G unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py",
+      "result": "57 passed"
+    },
+    {
+      "name": "Phase 1G real authentication, quota, background parity, and quarantine gate",
+      "command": "CANDLESCOPE_PHASE1G_INTEGRATION=1 CANDLESCOPE_PHASE1G_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 1 skipped"
+    },
+    {
+      "name": "Phase 1F real HTTP hot parity and lagged cold route regression",
+      "command": "CANDLESCOPE_PHASE1F_INTEGRATION=1 CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 1 skipped"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1G lint, format, dependency, compilation, Compose, JSON, and patch hygiene",
+      "result": "ruff check and format passed; uv pip check passed for 70 packages; compileall passed; Phase 1G Compose config passed; evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "bearer authentication is end-user, organization, or workspace authorization",
+    "mTLS, OIDC, token rotation, revocation, or a production secret manager is configured",
+    "structured audit logging is a durable audit database or tamper-evident hash chain",
+    "ClickHouse server-side users, grants, resource groups, or quotas are production configured",
+    "same-stream event-time Parquet pruning or long-manifest compaction is implemented",
+    "hot quarantine state is shared between service instances or manually manageable",
+    "24 hour public-exchange continuity, reconnect, node-restart, network-partition, or production capacity has passed",
+    "WebSocket fan-out or Replay Worker snapshot integration is implemented",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

@@ -1,4 +1,4 @@
-"""Standalone Phase 1F snapshot query HTTP service entrypoint."""
+"""Standalone Phase 1G snapshot query HTTP service entrypoint."""
 
 from __future__ import annotations
 
@@ -9,6 +9,10 @@ import uvicorn
 from app.server_runtime.query_api import create_snapshot_query_app
 from app.server_runtime.query_cursor import KafkaProjectionCursorReader
 from app.server_runtime.query_router import SnapshotQueryRouter
+from app.server_runtime.query_security import (
+    BearerTokenAuthenticator,
+    StructuredLogQueryAuditSink,
+)
 from app.server_runtime.query_settings import QueryServiceSettings
 from app.server_runtime.storage.clickhouse_query import (
     ClickHouseSnapshotMarketEventQuery,
@@ -47,18 +51,29 @@ def build_app(settings: QueryServiceSettings):
             request_timeout_ms=settings.clickhouse_request_timeout_ms,
             max_scan_rows=settings.max_scan_rows,
             max_page_rows=settings.max_page_rows,
+            max_execution_time_ms=settings.clickhouse_max_execution_time_ms,
+            max_memory_usage_bytes=settings.clickhouse_max_memory_usage_bytes,
+            max_bytes_to_read=settings.clickhouse_max_bytes_to_read,
+            max_threads=settings.clickhouse_max_threads,
         ),
         projection_cursor=KafkaProjectionCursorReader(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             group_id=settings.clickhouse_writer_group_id,
-            client_id="candlescope-phase1f-query-cursor",
+            client_id="candlescope-phase1g-query-cursor",
             connection_options={
                 "request_timeout_ms": settings.kafka_request_timeout_ms,
             },
         ),
+        parity_sample_interval_ms=settings.parity_sample_interval_ms,
+        parity_probe_capacity=settings.parity_probe_capacity,
     )
     return create_snapshot_query_app(
         router=router,
+        authenticator=BearerTokenAuthenticator(
+            token=settings.auth_bearer_token,
+            principal=settings.auth_principal,
+        ),
+        audit_sink=StructuredLogQueryAuditSink(),
         max_concurrent_queries=settings.max_concurrent_queries,
         query_queue_timeout_ms=settings.query_queue_timeout_ms,
     )

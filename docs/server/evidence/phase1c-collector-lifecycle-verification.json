@@ -1,0 +1,110 @@
+{
+  "schema_version": "candlescope.server-phase1c-collector-lifecycle-verification.v1",
+  "captured_at_utc": "2026-08-09T02:22:49Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "3d1eb781a4f497b5bbd5d00f7ede47e49f3bf2c6",
+  "phase": "phase1c-always-on-collector-lifecycle",
+  "phase1c_passed": true,
+  "stream": {
+    "partition_key": "binance:futures:BTCUSDT@agg_trade",
+    "exchange": "binance",
+    "market_type": "futures",
+    "symbol": "BTCUSDT",
+    "stream_type": "aggTrade",
+    "production_source": "ExchangeIngestionFactory L1-L6 start_market pipeline"
+  },
+  "lifecycle": {
+    "states": [
+      "starting",
+      "standby",
+      "recovering",
+      "leader",
+      "degraded",
+      "fenced",
+      "stopping",
+      "stopped"
+    ],
+    "ready_requires": [
+      "active fenced lease",
+      "connected ingestion source",
+      "leader state"
+    ],
+    "heartbeat_independent_of_publish_lock": true,
+    "heartbeat_request_bounded_by_interval": true,
+    "renewal_preserves_concurrent_pending_and_checkpoint_fields": true,
+    "shutdown_order": [
+      "source stop",
+      "heartbeat cancel",
+      "healthy lease release",
+      "publisher stop"
+    ],
+    "signals": [
+      "SIGINT",
+      "SIGTERM"
+    ]
+  },
+  "two_process_takeover_gate": {
+    "infrastructure": [
+      "PostgreSQL 18.4",
+      "Redpanda 26.1.14"
+    ],
+    "source": "deterministic injected event source; no public exchange dependency",
+    "leader_a_epoch": 0,
+    "leader_a_sequence": 42,
+    "leader_a_kafka_offset": 0,
+    "leader_a_fault": "SIGKILL without lease release",
+    "process_b_observed_standby_before_takeover": true,
+    "standby_source_started": false,
+    "leader_b_epoch": 1,
+    "leader_b_sequence": 43,
+    "leader_b_kafka_offset": 1,
+    "leader_b_sigterm_exit_code": 0,
+    "final_checkpoint_sequence": 43,
+    "final_checkpoint_offset": 1,
+    "pending_cleared": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1A, 1B, and 1C unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py",
+      "result": "34 passed"
+    },
+    {
+      "name": "Phase 1C two-process Redpanda and PostgreSQL takeover gate",
+      "command": "CANDLESCOPE_PHASE1C_INTEGRATION=1 CANDLESCOPE_PHASE1C_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1c_takeover.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1B lost-receipt process-fault regression",
+      "command": "CANDLESCOPE_PHASE1B_INTEGRATION=1 CANDLESCOPE_PHASE1B_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1b_redpanda.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 0 contracts and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "Binance normalizer, exchange capability, CCXT provider, recovery, registry, and API regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1C runtime lint and format",
+      "command": "uvx ruff check and format --check on Phase 1C runtime, scripts, and tests",
+      "result": "passed"
+    },
+    {
+      "name": "dependency, compilation, Compose, JSON, and patch hygiene",
+      "result": "uv pip check passed for 66 packages; compileall passed; Compose config passed; evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "the deterministic process gate is a public Binance live-ingestion test",
+    "24 hour ingestion continuity or reconnect capacity has passed",
+    "Kafka TLS, SASL, and production secret management are configured",
+    "ClickHouse, Parquet, query, or WebSocket downstream services are implemented",
+    "the FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

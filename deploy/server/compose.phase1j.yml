@@ -1,0 +1,100 @@
+name: candlescope-server-phase1j
+
+services:
+  postgres:
+    image: postgres:18.4-bookworm
+    entrypoint:
+      - /bin/bash
+      - -ceu
+      - |
+        install -d -m 0700 -o postgres -g postgres /base-backup /wal-archive
+        exec docker-entrypoint.sh "$${@}"
+      - --
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=1s
+      - -c
+      - archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f
+    environment:
+      POSTGRES_DB: candlescope
+      POSTGRES_USER: candlescope
+      POSTGRES_PASSWORD: phase1j-local-only
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candlescope -d candlescope"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+    volumes:
+      - postgres-data:/var/lib/postgresql
+      - wal-archive:/wal-archive
+      - base-backup:/base-backup
+
+  postgres-recovery:
+    image: postgres:18.4-bookworm
+    profiles: ["recovery"]
+    entrypoint:
+      - /bin/bash
+      - -ceu
+      - |
+        test ! -e "$${PGDATA}/PG_VERSION"
+        test -s /base-backup/current/base.tar.gz
+        test -s /base-backup/current/backup_manifest
+        test -s /base-backup/recovery_target_time
+        install -d -m 0700 -o postgres -g postgres "$${PGDATA}"
+        tar -xzf /base-backup/current/base.tar.gz -C "$${PGDATA}"
+        if test -s /base-backup/current/pg_wal.tar.gz; then
+          install -d -m 0700 -o postgres -g postgres "$${PGDATA}/pg_wal"
+          tar -xzf /base-backup/current/pg_wal.tar.gz -C "$${PGDATA}/pg_wal"
+        fi
+        touch "$${PGDATA}/recovery.signal"
+        target_time="$$(tr -d '\r\n' < /base-backup/recovery_target_time)"
+        printf "%s\n" \
+          "restore_command = 'cp /wal-archive/%f %p'" \
+          "recovery_target_time = '$${target_time}'" \
+          "recovery_target_inclusive = 'true'" \
+          "recovery_target_action = 'promote'" \
+          >> "$${PGDATA}/postgresql.auto.conf"
+        chown -R postgres:postgres "$${PGDATA}"
+        chmod 0700 "$${PGDATA}"
+        exec gosu postgres postgres
+    ports:
+      - "15433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U candlescope -d candlescope"]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - recovery-data:/var/lib/postgresql/data
+      - wal-archive:/wal-archive:ro
+      - base-backup:/base-backup:ro
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: candlescope
+      MINIO_ROOT_PASSWORD: phase1j-local-secret
+    ports:
+      - "19000:9000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://localhost:9000/minio/health/live"]
+      interval: 2s
+      timeout: 5s
+      retries: 60
+    volumes:
+      - minio-data:/data
+
+volumes:
+  base-backup:
+  minio-data:
+  postgres-data:
+  recovery-data:
+  wal-archive:

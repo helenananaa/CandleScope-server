@@ -2,6 +2,8 @@
 
 状态：QUERY_CONTROL_OPERATIONS_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1J 已补上物理 base backup、WAL archive 与 target-time PITR 的受控恢复门禁；本文件第 5 节关于这些能力“尚未实现”的描述仅代表 Phase 1I 当时边界，当前边界以 `CANDLESCOPE_SERVER_PHASE1J_EXECUTION_zh.md` 为准。
+
 Phase 1I 延续独立快照查询进程，仍不解除主 FastAPI `server` Profile。它收紧 Phase 1H 的数据库管理边界，并增加可由数据库之外保存的审计证明：
 
 ```text

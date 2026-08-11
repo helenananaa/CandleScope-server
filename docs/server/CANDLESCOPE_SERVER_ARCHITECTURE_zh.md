@@ -102,6 +102,8 @@ ArchiveCommit 必须返回该快照引用、对象 URI/hash，以及按 MarketSt
 
 Phase 1I 把 query-control DDL 从运行进程移到固定 SHA-256 的外部版本化迁移，并把登录身份分成只写必要状态的 runtime role 与只读 auditor role。运行时会逐项验证迁移版本和有效权限，缺表、版本漂移、越权或缺权均拒绝启动。审计 verifier 使用只读 repeatable-read 快照；经校验的数据库 head 可用独立保管的 HMAC-SHA256 key 签名并条件写入对象存储，再以明确的 anchor URI 校验备份恢复后的事件、head、迁移版本和状态。该锚点能让只有数据库管理权的一方无法静默重算历史，但不是公钥签名、不可抵赖账本、对象锁或生产灾备方案；HMAC/S3 管理权未隔离、锚点 URI 未可靠保存、对象被删除或旧锚被故意选取时，仍需要外部控制补足。
 
+Phase 1J 增加 PostgreSQL 物理 base backup、连续 WAL archive 适配器和真实 target-time PITR 门禁。每套备份以不可变对象保存 PostgreSQL `backup_manifest`、`base.tar.gz`、`pg_wal.tar.gz`，并在 RFC 8785/HMAC 清单中绑定 system identifier、timeline、LSN 范围、精确 `recovery_target_time`、WAL 前缀和 Phase 1I 审计锚；恢复前必须同时验证清单、全部对象 hash 和锚点引用。WAL 文件名、大小、metadata 与内容 hash 均 fail closed，同名重放只接受完全相同的 bytes。物理恢复后 identity sequence 只承诺继续单调前进，不承诺与已提交审计记录连续：PostgreSQL sequence 的非事务语义和恢复重放会留下合法间隙，审计正确性仍由 record count、递增 sequence、previous hash 和 head 全链共同验证。
+
 冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。审计表当前仍按完整单链和全局唯一 sequence/hash 验证；在定义分区键、跨分区唯一性、链 checkpoint、备份和法定保留要求前，不启用自动分区或删除。
 
 ### SQLite
@@ -147,6 +149,7 @@ PostgreSQL 保存 session_id 到 worker_id 的租约、fencing epoch、状态摘
 - 对象写入先生成临时对象，再以带 data_epoch、snapshot_version 和 hash 的 manifest commit 宣告可见；
 - 进程重启、节点重启和网络分区均需故障注入测试；
 - 恢复时宁可停止发布或标记 stale，也不发布无法证明连续的数据。
+- PostgreSQL PITR 只有在备份清单、审计锚、目标时间和目标所需 WAL 都经验证后才能提升；缺少任一对象或校验不匹配时不得启动查询运行时。
 
 ## 10. 可观测与数据质量
 

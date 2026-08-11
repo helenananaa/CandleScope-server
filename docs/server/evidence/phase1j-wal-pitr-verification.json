@@ -1,0 +1,141 @@
+{
+  "schema_version": "candlescope.server-phase1j-wal-pitr-verification.v1",
+  "captured_at_utc": "2026-08-11T13:36:14Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "e5a6e950872e73178bebb7ecefca6c16be181605",
+  "phase": "phase1j-wal-pitr-operations",
+  "phase1j_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false
+  },
+  "physical_backup_catalog": {
+    "schema_version": "candlescope.query-physical-backup.v1",
+    "algorithm": "HMAC-SHA256",
+    "canonicalization": "RFC 8785",
+    "required_artifacts": ["backup_manifest", "base.tar.gz", "pg_wal.tar.gz"],
+    "postgres_backup_manifest_version": 2,
+    "postgres_metadata_bound": [
+      "system_identifier",
+      "timeline",
+      "start_lsn",
+      "end_lsn"
+    ],
+    "recovery_target_time_signed": true,
+    "recovery_target_time_format": "YYYY-MM-DD HH:MM:SS.ffffff+00",
+    "wal_archive_prefix_signed": true,
+    "audit_anchor_uri_hash_head_and_migration_signed": true,
+    "artifact_uri_size_and_sha256_signed": true,
+    "object_write": "S3 If-None-Match star",
+    "same_backup_replay_requires_identical_bytes": true,
+    "publisher_pg_verifybackup": "--no-parse-wal",
+    "publisher_entrypoint": "backend/scripts/server_query_backup_publish.py",
+    "bundle_verifier_entrypoint": "backend/scripts/server_query_backup_verify.py"
+  },
+  "wal_archive": {
+    "archive_entrypoint": "backend/scripts/server_query_wal_archive.py",
+    "restore_entrypoint": "backend/scripts/server_query_wal_restore.py",
+    "accepted_filename_classes": ["segment", "timeline history", "backup history"],
+    "path_or_lowercase_filename_rejected": true,
+    "default_max_object_bytes": 67108864,
+    "conditional_create": true,
+    "same_name_different_bytes_rejected": true,
+    "restore_metadata_size_and_sha256_verified": true,
+    "restore_root_confined": true,
+    "restore_atomic_replace_and_fsync": true
+  },
+  "real_pitr_gate": {
+    "infrastructure": [
+      "PostgreSQL 18.4-bookworm",
+      "MinIO RELEASE.2025-09-07T16-13-09Z"
+    ],
+    "base_backup_format": "tar gzip with streamed WAL",
+    "matching_pg_verifybackup_passed": true,
+    "primary_pre_target_record_count": 2,
+    "primary_pre_target_head_sequence": 2,
+    "primary_post_target_record_count": 3,
+    "primary_post_target_head_sequence": 3,
+    "pg_stat_archiver_archived_count": 7,
+    "pg_stat_archiver_failed_count": 0,
+    "wal_segment_bytes": 16777216,
+    "wal_uploaded_downloaded_and_hash_verified_before_recovery": true,
+    "backup_artifacts_downloaded_and_hash_verified_before_recovery": true,
+    "recovered_record_count_at_target": 2,
+    "recovered_database_equals_pre_target_verification": true,
+    "recovered_anchor_verification": true,
+    "pre_target_event_present": true,
+    "post_target_event_absent": true,
+    "recovery_promoted": true,
+    "post_recovery_runtime_append_passed": true,
+    "post_recovery_record_count": 3,
+    "post_recovery_head_sequence": 35,
+    "sequence_contract": "strictly increasing, not contiguous"
+  },
+  "gates": [
+    {
+      "name": "Phase 1J backup catalog and WAL archive unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1j_pitr_operations.py",
+      "result": "17 passed"
+    },
+    {
+      "name": "Phase 1J real PostgreSQL physical backup, WAL archive, target-time recovery, and promotion gate",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 7.76s"
+    },
+    {
+      "name": "Phase 1A through 1J unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py",
+      "result": "83 passed"
+    },
+    {
+      "name": "Phase 1I real migration, privilege, anchor, backup, and restore regression",
+      "command": "CANDLESCOPE_PHASE1I_INTEGRATION=1 CANDLESCOPE_PHASE1I_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1i_query_operations.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1H real multi-instance regression",
+      "command": "CANDLESCOPE_PHASE1H_INTEGRATION=1 CANDLESCOPE_PHASE1H_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1G real authentication, quota, parity, and quarantine regression",
+      "command": "CANDLESCOPE_PHASE1G_INTEGRATION=1 CANDLESCOPE_PHASE1G_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1F real HTTP hot and cold route regression",
+      "command": "CANDLESCOPE_PHASE1F_INTEGRATION=1 CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1J static, dependency, Compose, JSON, and patch hygiene",
+      "result": "ruff check and format passed for 8 files; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; both backup CLI help paths passed; evidence JSON strict parse passed; git diff check passed"
+    }
+  ],
+  "claims_not_made": [
+    "an embedded scheduler, systemd timer, or Kubernetes CronJob is deployed",
+    "automatic query writer drain or fencing is implemented",
+    "retention pruning or backup lifecycle automation is configured",
+    "24 or 72 hour WAL continuity and storage outage recovery has passed",
+    "production RPO, RTO, capacity, or large-backup performance is measured",
+    "off-site replication, PostgreSQL HA, streaming replica, or automatic failover is configured",
+    "S3 conditional creation provides Object Lock, WORM retention, or deletion protection",
+    "HMAC provides public-key non-repudiation, KMS, HSM, rotation, or dual control",
+    "pg_verifybackup --no-parse-wal parses or proves semantic WAL continuity",
+    "the local file-mirror recovery gate proves production S3 restore throughput",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

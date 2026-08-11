@@ -1,0 +1,131 @@
+{
+  "schema_version": "candlescope.server-phase1m-scheduled-backup-verification.v1",
+  "captured_at_utc": "2026-08-11T15:00:21Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9f8e4a296aaf60ec1d26c47364a534bb0761d52d",
+  "phase": "phase1m-scheduled-physical-backup",
+  "phase1m_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false,
+    "systemd_templates_installed": false,
+    "external_alert_route_configured": false
+  },
+  "one_shot_job": {
+    "receipt_schema": "candlescope.query-backup-job-receipt.v1",
+    "canonical_uuid_is_backup_id": true,
+    "same_host_nonblocking_kernel_lock": true,
+    "cross_host_postgresql_exclusive_fence": true,
+    "unique_private_staging_directory": true,
+    "staging_cleanup_attempted_on_all_job_outcomes": true,
+    "lock_released_even_if_cleanup_fails": true,
+    "child_runtime_bounded": true,
+    "child_output_bounded": true,
+    "child_process_group_terminated_on_bound_violation": true,
+    "strict_two_line_canonical_json_receipts": true,
+    "structured_secret_free_failure_receipt": true
+  },
+  "basebackup_contract": {
+    "dedicated_login_replication_role_required": true,
+    "superuser_required": false,
+    "command_flags": [
+      "--format=tar",
+      "--gzip",
+      "--wal-method=stream",
+      "--checkpoint=fast",
+      "--manifest-checksums=SHA256",
+      "--no-password"
+    ],
+    "exact_artifacts": [
+      "backup_manifest",
+      "base.tar.gz",
+      "pg_wal.tar.gz"
+    ],
+    "artifact_symlinks_rejected": true,
+    "ambient_pgpassword_rejected": true,
+    "pgservice_indirection_rejected": true,
+    "owned_private_pgpass_required": true,
+    "owned_private_staging_and_lock_roots_required": true,
+    "basebackup_child_receives_only_libpq_allowlist": true,
+    "backup_window_does_not_receive_replication_passfile": true
+  },
+  "systemd_templates": {
+    "dedicated_service_identity": "candlescope-backup",
+    "oneshot": true,
+    "timer_on_calendar": "*-*-* 02:00:00",
+    "persistent_missed_run": true,
+    "randomized_delay_seconds": 900,
+    "service_timeout_seconds": 1500,
+    "private_runtime_and_state_directories": true,
+    "protect_system_strict": true,
+    "no_new_privileges": true,
+    "failure_signal_schema": "candlescope.query-backup-failure-signal.v1",
+    "failure_signal_journal_only": true,
+    "failure_hook_private_network": true
+  },
+  "real_postgresql_18_gate": {
+    "fresh_compose_volume_used_for_regressions": true,
+    "dedicated_replication_role_created": true,
+    "role_is_not_superuser_createdb_or_createrole": true,
+    "real_postgresql_18_pg_basebackup_executed": true,
+    "exact_artifact_set_validated_by_job": true,
+    "scheduled_job_receipt_aggregated": true,
+    "staging_cleanup_passed": true,
+    "window_phase_in_phase1m_gate": "fixed valid receipt fixture",
+    "complete_minio_wal_pitr_proof_source": "separate Phase 1J through Phase 1L real gate"
+  },
+  "gates": [
+    {
+      "name": "Phase 1M job, privilege, receipt, failure, and systemd unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1m_scheduled_backup.py",
+      "result": "9 passed"
+    },
+    {
+      "name": "Phase 1A through 1M unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py backend/tests/test_server_phase1l_wal_coverage.py backend/tests/test_server_phase1m_scheduled_backup.py",
+      "result": "105 passed"
+    },
+    {
+      "name": "Phase 1J through 1L real fenced PostgreSQL 18 physical backup, MinIO continuous WAL proof, and PITR regression",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 8.71s"
+    },
+    {
+      "name": "Phase 1K real multi-instance write drain and fence regression",
+      "command": "CANDLESCOPE_PHASE1K_INTEGRATION=1 CANDLESCOPE_PHASE1K_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1k_backup_window.py",
+      "result": "1 passed in 1.34s"
+    },
+    {
+      "name": "Phase 1M real PostgreSQL 18 pg_basebackup orchestration gate",
+      "command": "CANDLESCOPE_PHASE1M_INTEGRATION=1 CANDLESCOPE_PHASE1M_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1m_scheduled_backup.py",
+      "result": "1 passed in 1.31s"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1M static, dependency, Compose, systemd, JSON, CLI, and patch hygiene",
+      "result": "ruff check and format passed for 4 files from the backend project root; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; systemd-analyze verify passed with two unrelated host-unit warnings; six operator CLI help paths passed; Phase 1J through 1M evidence JSON strict parse passed; git diff check passed; no Phase 1 containers remained"
+    }
+  ],
+  "claims_not_made": [
+    "the systemd templates are installed or the timer is enabled on a production host",
+    "the journal failure signal is delivered to an external alerting or on-call route",
+    "automatic retry, backoff, missed-run SLO, task history, orphan cleanup, retention, backup selection, or restore approval is implemented",
+    "production secrets are supplied by a secret manager",
+    "the narrow Phase 1M gate independently proves the complete MinIO WAL and PITR chain",
+    "24 or 72 hour scheduling and WAL continuity, object-store outage recovery, disk exhaustion, network partition, host restart, multi-scheduler behavior, or large-backup capacity has passed",
+    "production RPO, RTO, off-site replication, PostgreSQL HA, streaming replication, automatic failover, or restore scheduling is configured",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

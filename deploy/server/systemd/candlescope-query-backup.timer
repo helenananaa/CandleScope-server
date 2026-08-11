@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule CandleScope query-control physical backup
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=yes
+RandomizedDelaySec=15min
+AccuracySec=1min
+Unit=candlescope-query-backup.service
+
+[Install]
+WantedBy=timers.target

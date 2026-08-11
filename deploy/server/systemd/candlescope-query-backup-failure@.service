@@ -1,0 +1,32 @@
+[Unit]
+Description=CandleScope query backup failure signal for %i
+
+[Service]
+Type=oneshot
+User=candlescope-backup
+Group=candlescope-backup
+WorkingDirectory=/opt/candlescope
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/usr/bin/env /opt/candlescope/backend/.venv/bin/python /opt/candlescope/backend/scripts/server_query_backup_failure.py --unit %i
+UMask=0077
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=candlescope-query-backup-failure
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes

@@ -108,6 +108,8 @@ Phase 1K 用一个固定 PostgreSQL advisory lock 建立 query-control 写入备
 
 Phase 1L 把物理备份清单升级为 manifest v3，并补上可独立复验的连续 WAL 覆盖证明。publisher 以 auditor 在单个 SQL statement 内捕获 recovery target time、target LSN、PostgreSQL 计算的 WAL filename 与 segment size；再从 base backup `end_lsn` 到 target LSN 按同一 timeline 枚举每个 segment。只有所有不可变 WAL 对象的 URI、metadata、hash 和精确大小均验证成功，且 Phase 1K fence 与 Phase 1I anchor 仍有效，才发布签名清单。独立 verifier 会重新读取整段 WAL；缺段、跨 timeline、区间倒退、边界算法不符或超过有界段数均 fail closed。该证明覆盖单个已签名恢复目标，不等于长期归档健康、生产 RPO/RTO 或自动调度。
 
+Phase 1M 增加一个由外部调度器调用的一次性物理备份 job。它先用专用 PostgreSQL `LOGIN REPLICATION` 非 superuser 角色执行有界 `pg_basebackup`，严格接受 tar/gzip/streamed-WAL 的三个预期 artifact，再在 Phase 1K exclusive fence 内运行 Phase 1L bundle，最后只输出绑定 manifest、anchor、恢复目标和 fence 的结构化 receipt。每台主机使用 kernel file lock 拒绝本机重叠任务，多主机仍由 PostgreSQL exclusive fence 串行化一致窗口。`pg_basebackup` 子进程只接收 allowlist libpq 环境，后续窗口不继承 replication passfile；staging/lock/passfile 必须归服务账号所有且不可被组或其他用户访问。仓库提供 hardened systemd oneshot/timer 和 journal failure-signal 模板，但模板没有安装，journal 信号也不是已经接通的告警路由。
+
 冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。审计表当前仍按完整单链和全局唯一 sequence/hash 验证；在定义分区键、跨分区唯一性、链 checkpoint、备份和法定保留要求前，不启用自动分区或删除。
 
 ### SQLite

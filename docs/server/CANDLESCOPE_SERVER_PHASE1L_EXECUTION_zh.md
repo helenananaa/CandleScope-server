@@ -2,6 +2,8 @@
 
 状态：QUERY_BACKUP_WAL_COVERAGE_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1M 已加入一次性 `pg_basebackup` 编排、同机互斥、systemd service/timer 模板和结构化 journal 失败信号；本文件第 5 节关于“没有自动执行 `pg_basebackup`、staging 清理或任务互斥”的描述仅代表 Phase 1L 当时边界。当前边界以 `CANDLESCOPE_SERVER_PHASE1M_EXECUTION_zh.md` 为准。
+
 Phase 1L 延续独立快照查询进程；主 FastAPI `server` Profile 仍保持 fail closed。它修复 Phase 1K 物理备份清单只签名 WAL archive 前缀、却没有证明恢复目标所需具体 WAL 已进入对象存储的缺口。
 
 ```text

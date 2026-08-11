@@ -14,21 +14,16 @@ from .postgres_lease import (
     PostgresStreamLeaseStore,
 )
 from .postgres_query_control import (
-    CREATE_HOT_PROJECTION_QUARANTINE_TABLE_SQL,
-    CREATE_QUERY_AUDIT_EVENT_TABLE_SQL,
-    CREATE_QUERY_AUDIT_HEAD_TABLE_SQL,
     HOT_PROJECTION_QUARANTINE_TABLE,
     QUERY_AUDIT_EVENT_TABLE,
     QUERY_AUDIT_HEAD_TABLE,
+    PostgresQueryAuditVerifier,
     PostgresQueryControlStore,
     QueryAuditChainVerification,
 )
 
 __all__ = [
     "CREATE_STREAM_LEASE_TABLE_SQL",
-    "CREATE_HOT_PROJECTION_QUARANTINE_TABLE_SQL",
-    "CREATE_QUERY_AUDIT_EVENT_TABLE_SQL",
-    "CREATE_QUERY_AUDIT_HEAD_TABLE_SQL",
     "HOT_PROJECTION_QUARANTINE_TABLE",
     "MARKET_EVENT_CONFLICT_TABLE",
     "MARKET_EVENT_FACT_TABLE",
@@ -40,6 +35,7 @@ __all__ = [
     "ClickHouseProjectionError",
     "ClickHouseSchemaError",
     "PostgresStreamLeaseStore",
+    "PostgresQueryAuditVerifier",
     "PostgresQueryControlStore",
     "QueryAuditChainVerification",
 ]

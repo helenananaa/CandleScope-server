@@ -1,0 +1,151 @@
+{
+  "schema_version": "candlescope.server-phase1i-query-control-operations-verification.v1",
+  "captured_at_utc": "2026-08-11T13:04:11Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "a7e136fa6ad6675d88900fe1c6ace23a624b7fe1",
+  "phase": "phase1i-query-control-operations",
+  "phase1i_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false
+  },
+  "migration": {
+    "file": "deploy/server/postgres/migrations/001_query_control.sql",
+    "version": 1,
+    "name": "001_query_control",
+    "sql_sha256": "b2c29c8300a325248d415ffc3358879beb644a7eddd2f7182a79366bfbebfcb5",
+    "external_runner": "backend/scripts/server_query_control_migrate.py",
+    "transaction_advisory_lock": true,
+    "first_apply": true,
+    "idempotent_replay_applied": false,
+    "runtime_ddl_removed": true,
+    "missing_or_drifted_migration_fails_closed": true,
+    "login_roles_created_outside_migration": true,
+    "group_roles_must_be_nonlogin_and_non_elevated": true,
+    "membership_options": "ADMIN FALSE, INHERIT TRUE, SET TRUE"
+  },
+  "least_privilege": {
+    "runtime_group_role": "candlescope_query_runtime",
+    "auditor_group_role": "candlescope_query_auditor",
+    "distinct_login_roles": true,
+    "elevated_role_flags_rejected": true,
+    "exact_effective_privileges_checked_on_start": true,
+    "runtime_schema_create": false,
+    "runtime_audit_event_table_insert": false,
+    "runtime_audit_event_insert_columns": [
+      "event_id",
+      "schema_version",
+      "event_json",
+      "previous_hash",
+      "event_hash"
+    ],
+    "runtime_audit_sequence_or_recorded_at_insert": false,
+    "runtime_audit_sequence_column_select": true,
+    "runtime_audit_event_body_select": false,
+    "runtime_audit_delete_or_truncate": false,
+    "runtime_head_and_quarantine_select_update": true,
+    "auditor_read_only": true,
+    "auditor_repeatable_read_snapshot": true,
+    "real_denied_operation_checks": [
+      "runtime SELECT event_json",
+      "runtime CREATE TABLE",
+      "auditor UPDATE audit head"
+    ]
+  },
+  "external_anchor": {
+    "schema_version": "candlescope.query-audit-anchor.v1",
+    "algorithm": "HMAC-SHA256",
+    "canonicalization": "RFC 8785",
+    "integer_encoding": "canonical decimal strings",
+    "object_write": "S3 If-None-Match star",
+    "object_key_includes": ["key_id", "head_audit_sequence", "head_event_hash"],
+    "same_head_replay_is_byte_identical": true,
+    "minimum_hmac_secret_bytes": 32,
+    "strict_duplicate_key_free_json": true,
+    "tamper_rejected": true,
+    "database_head_drift_rejected": true,
+    "migration_drift_rejected": true,
+    "key_id_mismatch_rejected": true,
+    "operator_entrypoint": "backend/scripts/server_query_audit_anchor.py",
+    "operator_publish_verify_round_trip_passed": true
+  },
+  "real_backup_restore_gate": {
+    "infrastructure": [
+      "PostgreSQL 18.4-bookworm",
+      "MinIO RELEASE.2025-09-07T16-13-09Z"
+    ],
+    "matching_postgresql_18_client_tools": true,
+    "dump_format": "custom data-only",
+    "dumped_relations": [
+      "candlescope_query_schema_migration",
+      "candlescope_query_audit_head",
+      "candlescope_query_audit_event",
+      "candlescope_query_audit_event_audit_sequence_seq",
+      "candlescope_query_hot_quarantine"
+    ],
+    "pre_restore_record_count": 4,
+    "pre_restore_head_audit_sequence": 4,
+    "pre_restore_quarantine_generation": 1,
+    "pre_restore_quarantine_active": false,
+    "schema_deleted_and_recreated_from_migration": true,
+    "post_restore_database_equals_pre_restore_verification": true,
+    "post_restore_anchor_verification": true,
+    "runtime_restart_after_restore": true,
+    "post_restore_next_audit_sequence": 5
+  },
+  "gates": [
+    {
+      "name": "Phase 1A through 1I unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py",
+      "result": "66 passed"
+    },
+    {
+      "name": "Phase 1I real migration, privilege, anchor, backup, and restore gate",
+      "command": "CANDLESCOPE_PHASE1I_INTEGRATION=1 CANDLESCOPE_PHASE1I_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1i_query_operations.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1H real multi-instance regression with external migration and split roles",
+      "command": "CANDLESCOPE_PHASE1H_INTEGRATION=1 CANDLESCOPE_PHASE1H_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1G real authentication, quota, parity, and process quarantine regression",
+      "command": "CANDLESCOPE_PHASE1G_INTEGRATION=1 CANDLESCOPE_PHASE1G_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1F real HTTP hot parity and lagged cold route regression",
+      "command": "CANDLESCOPE_PHASE1F_INTEGRATION=1 CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1I static, dependency, Compose, JSON, checksum, and patch hygiene",
+      "result": "ruff check and format passed for 9 files; compileall passed; uv pip check passed for 70 packages; Phase 1H and Phase 1I Compose config passed; migration SHA-256 and evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "the HMAC anchor is a public-key signature or non-repudiation proof",
+    "KMS, HSM, key rotation, dual control, or production secret custody is configured",
+    "S3 conditional creation provides Object Lock, WORM retention, or deletion protection",
+    "the expected anchor URI is externally checkpointed by a production control plane",
+    "scheduled backup, WAL archive, PITR, off-site replication, RPO, or RTO is configured",
+    "audit partitioning, automatic retention, incremental verification, or long-chain compaction is implemented",
+    "PostgreSQL HA, network partition, failover, 24 hour continuity, or production capacity has passed",
+    "end-user, organization, or workspace authorization is implemented",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

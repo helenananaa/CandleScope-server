@@ -2,6 +2,8 @@
 
 状态：SHARED_QUERY_CONTROL_COMPLETE_NOT_DEPLOYABLE
 
+> 当前 checkout 的 Phase 1I 已取代本阶段的运行时建表方式：查询进程不再执行 DDL，必须先运行固定校验和的外部迁移，并使用独立 runtime/auditor 登录角色。历史语义与原始 Phase 1H 证据保留在本文；现行操作步骤见 `CANDLESCOPE_SERVER_PHASE1I_EXECUTION_zh.md`。
+
 Phase 1H 延续独立快照查询进程，不解除主 FastAPI `server` Profile。它把 Phase 1G 的进程内热端隔离和日志审计升级为 PostgreSQL 权威控制状态：
 
 ```text

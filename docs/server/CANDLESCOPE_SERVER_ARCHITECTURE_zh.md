@@ -98,9 +98,11 @@ ArchiveCommit 必须返回该快照引用、对象 URI/hash，以及按 MarketSt
 
 交互查询以不可变 Parquet 快照为正确性权威。只有 ClickHouse writer 消费组的 committed next offset 已覆盖请求的 snapshot_version，且同一请求的 ClickHouse 页与 Parquet 页逐项相等时，查询服务才可返回热结果；游标落后时 `auto` 必须走冷端，强制 `hot` 必须明确拒绝，任何热冷差异必须 fail closed。Phase 1F 的逐请求双读是正确性证明机制，不是最终容量方案。
 
-查询服务只能由已认证的内部入口调用，并为认证拒绝、请求校验和每次查询生成不含凭据与行情 payload 的结构化审计事件。成功热查询登记为不可变后台 parity probe；任一前台或后台热冷页不一致会锁存热端 quarantine。Phase 1H 把 quarantine 代际状态和 RFC 8785 审计哈希链放入 PostgreSQL；所有查询实例读取同一状态，进程重启不能解除隔离。解除必须使用独立控制凭据、匹配当前 generation，并把状态转换和成功审计放进同一数据库事务；不允许按一次成功采样自动解除。哈希链能发现记录被意外或未经配套重算的改写，但没有外部签名/锚点时不能抵抗拥有完整数据库管理权的攻击者。
+查询服务只能由已认证的内部入口调用，并为认证拒绝、请求校验和每次查询生成不含凭据与行情 payload 的结构化审计事件。成功热查询登记为不可变后台 parity probe；任一前台或后台热冷页不一致会锁存热端 quarantine。Phase 1H 把 quarantine 代际状态和 RFC 8785 审计哈希链放入 PostgreSQL；所有查询实例读取同一状态，进程重启不能解除隔离。解除必须使用独立控制凭据、匹配当前 generation，并把状态转换和成功审计放进同一数据库事务；不允许按一次成功采样自动解除。
 
-冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。
+Phase 1I 把 query-control DDL 从运行进程移到固定 SHA-256 的外部版本化迁移，并把登录身份分成只写必要状态的 runtime role 与只读 auditor role。运行时会逐项验证迁移版本和有效权限，缺表、版本漂移、越权或缺权均拒绝启动。审计 verifier 使用只读 repeatable-read 快照；经校验的数据库 head 可用独立保管的 HMAC-SHA256 key 签名并条件写入对象存储，再以明确的 anchor URI 校验备份恢复后的事件、head、迁移版本和状态。该锚点能让只有数据库管理权的一方无法静默重算历史，但不是公钥签名、不可抵赖账本、对象锁或生产灾备方案；HMAC/S3 管理权未隔离、锚点 URI 未可靠保存、对象被删除或旧锚被故意选取时，仍需要外部控制补足。
+
+冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。审计表当前仍按完整单链和全局唯一 sequence/hash 验证；在定义分区键、跨分区唯一性、链 checkpoint、备份和法定保留要求前，不启用自动分区或删除。
 
 ### SQLite
 

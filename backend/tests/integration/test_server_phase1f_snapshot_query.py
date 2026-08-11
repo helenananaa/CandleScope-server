@@ -20,6 +20,12 @@ from app.server_runtime.adapters import AggTradeEnvelopeAdapter
 from app.server_runtime.consumers import KafkaMarketEventBatchConsumer
 from app.server_runtime.producer_identity import ProducerIdentity
 from app.server_runtime.query_control import QueryControlError
+from app.server_runtime.query_migrations import (
+    QUERY_AUDITOR_GROUP_ROLE,
+    QUERY_CONTROL_MIGRATION_TABLE,
+    QUERY_RUNTIME_GROUP_ROLE,
+    PostgresQueryControlMigrator,
+)
 from app.server_runtime.publishers import (
     MARKET_EVENTS_TOPIC,
     KafkaMarketEventPublisher,
@@ -36,10 +42,11 @@ from app.server_runtime.storage.postgres_query_control import (
     HOT_PROJECTION_QUARANTINE_TABLE,
     QUERY_AUDIT_EVENT_TABLE,
     QUERY_AUDIT_HEAD_TABLE,
-    PostgresQueryControlStore,
+    PostgresQueryAuditVerifier,
 )
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 from botocore.client import Config
+from psycopg import sql
 from psycopg.types.json import Jsonb
 
 BOOTSTRAP_SERVERS = "localhost:19092"
@@ -59,8 +66,24 @@ QUERY_URL_C = "http://127.0.0.1:18112"
 QUERY_AUTH_TOKEN = "phase1g-integration-token-000000000000"
 QUERY_CONTROL_TOKEN = "phase1h-control-token-00000000000000"
 POSTGRES_DSN = "postgresql://candlescope:phase1h-local-only@localhost:15432/candlescope"
+POSTGRES_RUNTIME_ROLE = "candlescope_query_app"
+POSTGRES_RUNTIME_PASSWORD = "phase1i-runtime-local-only"
+POSTGRES_RUNTIME_DSN = (
+    "postgresql://candlescope_query_app:phase1i-runtime-local-only"
+    "@localhost:15432/candlescope"
+)
+POSTGRES_AUDITOR_ROLE = "candlescope_query_audit_reader"
+POSTGRES_AUDITOR_PASSWORD = "phase1i-auditor-local-only"
+POSTGRES_AUDITOR_DSN = (
+    "postgresql://candlescope_query_audit_reader:phase1i-auditor-local-only"
+    "@localhost:15432/candlescope"
+)
 SEGMENT_EVENT_COUNT = 4
 QUERY_SCRIPT = Path(__file__).resolve().parents[2] / "scripts/server_snapshot_query.py"
+QUERY_CONTROL_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "deploy/server/postgres/migrations/001_query_control.sql"
+)
 
 
 @pytest.mark.skipif(
@@ -332,14 +355,14 @@ async def _run_shared_control_gate() -> None:
         assert restored[0] == 200
         assert restored[1]["backend"] == "hot"
 
-        verifier = PostgresQueryControlStore(
-            POSTGRES_DSN,
-            instance_id="phase1h-verifier",
+        verifier = PostgresQueryAuditVerifier(
+            POSTGRES_AUDITOR_DSN,
+            verifier_id="phase1h-verifier",
         )
         await verifier.start()
         try:
             verification = await verifier.verify_audit_chain(max_records=100)
-            final_state = await verifier.status()
+            final_state = await verifier.quarantine_status()
         finally:
             await verifier.stop()
         assert verification.record_count == 11
@@ -710,6 +733,58 @@ async def _reset_query_control_postgres() -> None:
         await connection.execute(
             f"DROP TABLE IF EXISTS {HOT_PROJECTION_QUARANTINE_TABLE}"
         )
+        await connection.execute(
+            f"DROP TABLE IF EXISTS {QUERY_CONTROL_MIGRATION_TABLE}"
+        )
+        async with connection.cursor() as cursor:
+            for role_name, password in (
+                (POSTGRES_RUNTIME_ROLE, POSTGRES_RUNTIME_PASSWORD),
+                (POSTGRES_AUDITOR_ROLE, POSTGRES_AUDITOR_PASSWORD),
+            ):
+                await cursor.execute(
+                    "SELECT 1 FROM pg_roles WHERE rolname = %s",
+                    (role_name,),
+                )
+                if await cursor.fetchone() is None:
+                    await cursor.execute(
+                        sql.SQL(
+                            "CREATE ROLE {} LOGIN PASSWORD {} INHERIT "
+                            "NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                            "NOREPLICATION NOBYPASSRLS"
+                        ).format(sql.Identifier(role_name), sql.Literal(password))
+                    )
+                else:
+                    await cursor.execute(
+                        sql.SQL(
+                            "ALTER ROLE {} LOGIN PASSWORD {} INHERIT "
+                            "NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                            "NOREPLICATION NOBYPASSRLS"
+                        ).format(sql.Identifier(role_name), sql.Literal(password))
+                    )
+            await cursor.execute(
+                "SELECT rolname FROM pg_roles WHERE rolname = ANY(%s)",
+                ([QUERY_RUNTIME_GROUP_ROLE, QUERY_AUDITOR_GROUP_ROLE],),
+            )
+            group_roles = {row[0] for row in await cursor.fetchall()}
+            for group_role in sorted(group_roles):
+                for login_role in (POSTGRES_RUNTIME_ROLE, POSTGRES_AUDITOR_ROLE):
+                    await cursor.execute(
+                        sql.SQL("REVOKE {} FROM {}").format(
+                            sql.Identifier(group_role),
+                            sql.Identifier(login_role),
+                        )
+                    )
+    migrator = PostgresQueryControlMigrator(
+        POSTGRES_DSN,
+        migration_path=QUERY_CONTROL_MIGRATION_PATH,
+        runtime_login_role=POSTGRES_RUNTIME_ROLE,
+        auditor_login_role=POSTGRES_AUDITOR_ROLE,
+        backend_ids=("clickhouse-market-events-v1",),
+    )
+    first = await migrator.apply()
+    replay = await migrator.apply()
+    assert first.applied is True
+    assert replay.applied is False
 
 
 async def _assert_durable_audit_is_redacted() -> None:
@@ -745,9 +820,9 @@ async def _assert_audit_mutation_is_detected() -> None:
                 "WHERE audit_sequence = %s",
                 (Jsonb(mutated), first[0]),
             )
-    verifier = PostgresQueryControlStore(
-        POSTGRES_DSN,
-        instance_id="phase1h-tamper-verifier",
+    verifier = PostgresQueryAuditVerifier(
+        POSTGRES_AUDITOR_DSN,
+        verifier_id="phase1h-tamper-verifier",
     )
     await verifier.start()
     try:
@@ -803,7 +878,7 @@ async def _start_query_service(
     if control_backend == "postgres":
         environment.update(
             {
-                "CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN": POSTGRES_DSN,
+                "CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN": POSTGRES_RUNTIME_DSN,
                 "CANDLESCOPE_SERVER_QUERY_CONTROL_BEARER_TOKEN": (QUERY_CONTROL_TOKEN),
             }
         )

@@ -460,12 +460,16 @@ def test_projection_cursor_reader_is_observational_and_settings_redact_secrets()
         "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": (
             "phase1g-settings-token-000000000000"
         ),
+        "CANDLESCOPE_SERVER_QUERY_CONTROL_BACKEND": "process",
+        "CANDLESCOPE_SERVER_QUERY_INSTANCE_ID": "phase1f-regression",
     }
     settings = QueryServiceSettings.from_env(environment)
     assert "clickhouse-secret" not in repr(settings)
     assert "minio-access" not in repr(settings)
     assert "minio-secret" not in repr(settings)
     assert "phase1g-settings-token" not in repr(settings)
+    assert settings.control_backend == "process"
+    assert settings.instance_id == "phase1f-regression"
     with pytest.raises(QueryServiceConfigurationError, match="S3_BUCKET"):
         QueryServiceSettings.from_env(
             {key: value for key, value in environment.items() if "S3_BUCKET" not in key}

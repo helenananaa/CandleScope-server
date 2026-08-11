@@ -11,6 +11,7 @@ from typing import Any
 
 import aiohttp
 import boto3
+import psycopg
 import pytest
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 from aiokafka.errors import TopicAlreadyExistsError
@@ -18,6 +19,7 @@ from app.data_engine.ingestion.models import DataSource, MarketEvent, StreamType
 from app.server_runtime.adapters import AggTradeEnvelopeAdapter
 from app.server_runtime.consumers import KafkaMarketEventBatchConsumer
 from app.server_runtime.producer_identity import ProducerIdentity
+from app.server_runtime.query_control import QueryControlError
 from app.server_runtime.publishers import (
     MARKET_EVENTS_TOPIC,
     KafkaMarketEventPublisher,
@@ -30,8 +32,15 @@ from app.server_runtime.storage.clickhouse import (
 from app.server_runtime.storage.parquet_archive import (
     ImmutableParquetMarketEventArchive,
 )
+from app.server_runtime.storage.postgres_query_control import (
+    HOT_PROJECTION_QUARANTINE_TABLE,
+    QUERY_AUDIT_EVENT_TABLE,
+    QUERY_AUDIT_HEAD_TABLE,
+    PostgresQueryControlStore,
+)
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 from botocore.client import Config
+from psycopg.types.json import Jsonb
 
 BOOTSTRAP_SERVERS = "localhost:19092"
 CLICKHOUSE_URL = "http://localhost:18123"
@@ -45,7 +54,11 @@ S3_ACCESS_KEY_ID = "candlescope"
 S3_SECRET_ACCESS_KEY = "phase1f-local-secret"
 DATA_EPOCH = "phase1f-query-epoch"
 QUERY_URL = "http://127.0.0.1:18110"
+QUERY_URL_B = "http://127.0.0.1:18111"
+QUERY_URL_C = "http://127.0.0.1:18112"
 QUERY_AUTH_TOKEN = "phase1g-integration-token-000000000000"
+QUERY_CONTROL_TOKEN = "phase1h-control-token-00000000000000"
+POSTGRES_DSN = "postgresql://candlescope:phase1h-local-only@localhost:15432/candlescope"
 SEGMENT_EVENT_COUNT = 4
 QUERY_SCRIPT = Path(__file__).resolve().parents[2] / "scripts/server_snapshot_query.py"
 
@@ -64,6 +77,14 @@ def test_real_http_hot_parity_and_lagged_cold_route() -> None:
 )
 def test_real_auth_quota_background_parity_and_hot_quarantine() -> None:
     asyncio.run(_run_hardening_gate())
+
+
+@pytest.mark.skipif(
+    os.environ.get("CANDLESCOPE_PHASE1H_INTEGRATION") != "1",
+    reason="requires the explicit Phase 1H shared-control stack",
+)
+def test_real_multi_instance_quarantine_clear_and_audit_chain() -> None:
+    asyncio.run(_run_shared_control_gate())
 
 
 async def _run_gate() -> None:
@@ -183,6 +204,160 @@ async def _run_hardening_gate() -> None:
     assert "snapshot_query_audit=" in process_output[1]
 
 
+async def _run_shared_control_gate() -> None:
+    _require_explicit_local_reset()
+    await _reset_topic()
+    await _reset_clickhouse()
+    await _reset_bucket()
+    await _reset_query_control_postgres()
+    clickhouse_group = f"phase1h-clickhouse-{uuid.uuid4()}"
+    archive_group = f"phase1h-archive-{uuid.uuid4()}"
+    original = _envelope(42)
+    conflict = _envelope(42, quantity="0.03000000")
+    following = _envelope(43)
+    await _publish((original, original, conflict, following))
+    await _project_clickhouse(clickhouse_group)
+    snapshot = await _archive_segment(archive_group)
+
+    process_a = await _start_query_service(
+        clickhouse_group,
+        bind_port=18110,
+        instance_id="phase1h-query-a",
+        parity_sample_interval_ms=50,
+        control_backend="postgres",
+    )
+    process_b: asyncio.subprocess.Process | None = None
+    process_c: asyncio.subprocess.Process | None = None
+    try:
+        process_b = await _start_query_service(
+            clickhouse_group,
+            bind_port=18111,
+            instance_id="phase1h-query-b",
+            parity_sample_interval_ms=60_000,
+            control_backend="postgres",
+        )
+        await _wait_ready(process_a, query_url=QUERY_URL)
+        await _wait_ready(process_b, query_url=QUERY_URL_B)
+        assert (
+            await _query(
+                snapshot,
+                original,
+                preference="auto",
+                limit=10,
+                query_url=QUERY_URL,
+            )
+        )[1]["backend"] == "hot"
+        assert (
+            await _query(
+                snapshot,
+                original,
+                preference="auto",
+                limit=10,
+                query_url=QUERY_URL_B,
+            )
+        )[1]["backend"] == "hot"
+        await _wait_for_metrics(
+            lambda value: value["parity"]["samples_passed"] >= 1,
+            timeout=5,
+            query_url=QUERY_URL,
+        )
+
+        await _replace_hot_envelope(conflict)
+        quarantined = await _wait_for_metrics(
+            lambda value: value["parity"]["hot_quarantined"] is True,
+            timeout=5,
+            query_url=QUERY_URL,
+        )
+        assert quarantined["parity"]["quarantine_generation"] == 1
+        fallback = await _query(
+            snapshot,
+            original,
+            preference="auto",
+            limit=10,
+            query_url=QUERY_URL_B,
+        )
+        assert fallback[0] == 200
+        assert fallback[1]["backend"] == "cold"
+        assert fallback[1]["hot_quarantined"] is True
+        shared_state = await _control_status(QUERY_URL_B)
+        assert shared_state[0] == 200
+        assert shared_state[1]["hot_projection"]["latched_by"] == "phase1h-query-a"
+        denied = await _control_status(QUERY_URL_B, token=QUERY_AUTH_TOKEN)
+        assert denied[0] == 401
+
+        await _terminate_process(process_a)
+        process_c = await _start_query_service(
+            clickhouse_group,
+            bind_port=18112,
+            instance_id="phase1h-query-c",
+            parity_sample_interval_ms=60_000,
+            control_backend="postgres",
+        )
+        await _wait_ready(process_c, query_url=QUERY_URL_C)
+        persisted = await _control_status(QUERY_URL_C)
+        assert persisted[1]["hot_projection"]["active"] is True
+        forced_hot = await _query(
+            snapshot,
+            original,
+            preference="hot",
+            limit=10,
+            query_url=QUERY_URL_C,
+        )
+        assert forced_hot[0] == 503
+        assert forced_hot[1]["detail"]["code"] == "HOT_PROJECTION_QUARANTINED"
+
+        await _replace_hot_envelope(original)
+        stale_clear = await _clear_control(
+            QUERY_URL_C,
+            expected_generation=2,
+            reason_code="projection_repaired",
+        )
+        assert stale_clear[0] == 409
+        assert stale_clear[1]["detail"]["code"] == "HOT_PROJECTION_GENERATION_CONFLICT"
+        cleared = await _clear_control(
+            QUERY_URL_C,
+            expected_generation=1,
+            reason_code="projection_repaired",
+            request_id="phase1h-operator:clear-1",
+        )
+        assert cleared[0] == 200
+        assert cleared[1]["hot_projection"]["active"] is False
+        restored = await _query(
+            snapshot,
+            original,
+            preference="auto",
+            limit=10,
+            query_url=QUERY_URL_B,
+        )
+        assert restored[0] == 200
+        assert restored[1]["backend"] == "hot"
+
+        verifier = PostgresQueryControlStore(
+            POSTGRES_DSN,
+            instance_id="phase1h-verifier",
+        )
+        await verifier.start()
+        try:
+            verification = await verifier.verify_audit_chain(max_records=100)
+            final_state = await verifier.status()
+        finally:
+            await verifier.stop()
+        assert verification.record_count == 11
+        assert verification.head_audit_sequence > 0
+        assert verification.head_event_hash != "0" * 64
+        assert final_state.active is False
+        assert final_state.generation == 1
+        await _assert_durable_audit_is_redacted()
+        await _assert_audit_mutation_is_detected()
+    finally:
+        if process_a.returncode is None:
+            await _terminate_process(process_a)
+        if process_b is not None:
+            await _terminate_process(process_b)
+        if process_c is not None:
+            await _terminate_process(process_c)
+
+
 def _market_event(sequence: int, *, quantity: str = "0.02500000") -> MarketEvent:
     return MarketEvent(
         event_type=StreamType.AGG_TRADE,
@@ -296,6 +471,7 @@ async def _query(
     preference: str,
     limit: int,
     cursor: dict[str, str] | None = None,
+    query_url: str = QUERY_URL,
 ) -> tuple[int, dict[str, Any]]:
     body = {
         "snapshot": {
@@ -314,7 +490,7 @@ async def _query(
     async with (
         aiohttp.ClientSession() as session,
         session.post(
-            f"{QUERY_URL}/api/v1/server/market-events/query",
+            f"{query_url}/api/v1/server/market-events/query",
             json=body,
             headers={"Authorization": f"Bearer {QUERY_AUTH_TOKEN}"},
         ) as response,
@@ -349,11 +525,11 @@ async def _query_without_auth(
         return response.status, await response.json()
 
 
-async def _metrics() -> dict[str, Any]:
+async def _metrics(*, query_url: str = QUERY_URL) -> dict[str, Any]:
     async with (
         aiohttp.ClientSession() as session,
         session.get(
-            f"{QUERY_URL}/metrics",
+            f"{query_url}/metrics",
             headers={"Authorization": f"Bearer {QUERY_AUTH_TOKEN}"},
         ) as response,
     ):
@@ -362,15 +538,59 @@ async def _metrics() -> dict[str, Any]:
         return body
 
 
-async def _wait_for_metrics(predicate: Any, *, timeout: float) -> dict[str, Any]:
+async def _wait_for_metrics(
+    predicate: Any,
+    *,
+    timeout: float,
+    query_url: str = QUERY_URL,
+) -> dict[str, Any]:
     deadline = asyncio.get_running_loop().time() + timeout
     last: dict[str, Any] | None = None
     while asyncio.get_running_loop().time() < deadline:
-        last = await _metrics()
+        last = await _metrics(query_url=query_url)
         if predicate(last):
             return last
         await asyncio.sleep(0.05)
     raise TimeoutError(f"query metrics predicate failed; last value: {last}")
+
+
+async def _control_status(
+    query_url: str,
+    *,
+    token: str = QUERY_CONTROL_TOKEN,
+) -> tuple[int, dict[str, Any]]:
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(
+            f"{query_url}/api/v1/server/control/hot-projection",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as response,
+    ):
+        return response.status, await response.json()
+
+
+async def _clear_control(
+    query_url: str,
+    *,
+    expected_generation: int,
+    reason_code: str,
+    request_id: str | None = None,
+) -> tuple[int, dict[str, Any]]:
+    headers = {"Authorization": f"Bearer {QUERY_CONTROL_TOKEN}"}
+    if request_id is not None:
+        headers["X-Request-ID"] = request_id
+    async with (
+        aiohttp.ClientSession() as session,
+        session.post(
+            f"{query_url}/api/v1/server/control/hot-projection/clear",
+            headers=headers,
+            json={
+                "expected_generation": expected_generation,
+                "reason_code": reason_code,
+            },
+        ) as response,
+    ):
+        return response.status, await response.json()
 
 
 def _store() -> S3ImmutableObjectStore:
@@ -483,7 +703,74 @@ async def _reset_topic() -> None:
         await admin.close()
 
 
-async def _start_query_service(group_id: str) -> asyncio.subprocess.Process:
+async def _reset_query_control_postgres() -> None:
+    async with await psycopg.AsyncConnection.connect(POSTGRES_DSN) as connection:
+        await connection.execute(f"DROP TABLE IF EXISTS {QUERY_AUDIT_EVENT_TABLE}")
+        await connection.execute(f"DROP TABLE IF EXISTS {QUERY_AUDIT_HEAD_TABLE}")
+        await connection.execute(
+            f"DROP TABLE IF EXISTS {HOT_PROJECTION_QUARANTINE_TABLE}"
+        )
+
+
+async def _assert_durable_audit_is_redacted() -> None:
+    async with await psycopg.AsyncConnection.connect(POSTGRES_DSN) as connection:
+        async with connection.cursor() as cursor:
+            await cursor.execute(
+                f"SELECT event_json FROM {QUERY_AUDIT_EVENT_TABLE} "
+                "ORDER BY audit_sequence"
+            )
+            rows = await cursor.fetchall()
+    rendered = str(rows)
+    assert QUERY_AUTH_TOKEN not in rendered
+    assert QUERY_CONTROL_TOKEN not in rendered
+    assert "phase1h-local-only" not in rendered
+    assert "phase1f-local-secret" not in rendered
+    assert "quarantine_latched" in rendered
+    assert "quarantine_cleared" in rendered
+
+
+async def _assert_audit_mutation_is_detected() -> None:
+    async with await psycopg.AsyncConnection.connect(POSTGRES_DSN) as connection:
+        async with connection.cursor() as cursor:
+            await cursor.execute(
+                f"SELECT audit_sequence, event_json FROM {QUERY_AUDIT_EVENT_TABLE} "
+                "ORDER BY audit_sequence LIMIT 1"
+            )
+            first = await cursor.fetchone()
+            assert first is not None
+            original = first[1]
+            mutated = {**original, "outcome": "deliberately_mutated"}
+            await cursor.execute(
+                f"UPDATE {QUERY_AUDIT_EVENT_TABLE} SET event_json = %s "
+                "WHERE audit_sequence = %s",
+                (Jsonb(mutated), first[0]),
+            )
+    verifier = PostgresQueryControlStore(
+        POSTGRES_DSN,
+        instance_id="phase1h-tamper-verifier",
+    )
+    await verifier.start()
+    try:
+        with pytest.raises(QueryControlError, match="event hash mismatch"):
+            await verifier.verify_audit_chain(max_records=100)
+    finally:
+        await verifier.stop()
+        async with await psycopg.AsyncConnection.connect(POSTGRES_DSN) as connection:
+            await connection.execute(
+                f"UPDATE {QUERY_AUDIT_EVENT_TABLE} SET event_json = %s "
+                "WHERE audit_sequence = %s",
+                (Jsonb(original), first[0]),
+            )
+
+
+async def _start_query_service(
+    group_id: str,
+    *,
+    bind_port: int = 18110,
+    instance_id: str = "phase1f-regression-query",
+    parity_sample_interval_ms: int = 50,
+    control_backend: str = "process",
+) -> asyncio.subprocess.Process:
     environment = dict(os.environ)
     environment.update(
         {
@@ -500,15 +787,29 @@ async def _start_query_service(group_id: str) -> asyncio.subprocess.Process:
             "CANDLESCOPE_SERVER_QUERY_S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
             "CANDLESCOPE_SERVER_QUERY_S3_SECRET_ACCESS_KEY": S3_SECRET_ACCESS_KEY,
             "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": QUERY_AUTH_TOKEN,
+            "CANDLESCOPE_SERVER_QUERY_CONTROL_BACKEND": control_backend,
+            "CANDLESCOPE_SERVER_QUERY_INSTANCE_ID": instance_id,
             "CANDLESCOPE_SERVER_QUERY_BIND_HOST": "127.0.0.1",
-            "CANDLESCOPE_SERVER_QUERY_BIND_PORT": "18110",
+            "CANDLESCOPE_SERVER_QUERY_BIND_PORT": str(bind_port),
             "CANDLESCOPE_SERVER_QUERY_MAX_PAGE_ROWS": "10",
             "CANDLESCOPE_SERVER_QUERY_MAX_SCAN_ROWS": "100",
-            "CANDLESCOPE_SERVER_QUERY_PARITY_SAMPLE_INTERVAL_MS": "50",
+            "CANDLESCOPE_SERVER_QUERY_PARITY_SAMPLE_INTERVAL_MS": str(
+                parity_sample_interval_ms
+            ),
             "CANDLESCOPE_SERVER_QUERY_PARITY_PROBE_CAPACITY": "8",
             "CANDLESCOPE_LOG_LEVEL": "WARNING",
         }
     )
+    if control_backend == "postgres":
+        environment.update(
+            {
+                "CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN": POSTGRES_DSN,
+                "CANDLESCOPE_SERVER_QUERY_CONTROL_BEARER_TOKEN": (QUERY_CONTROL_TOKEN),
+            }
+        )
+    else:
+        environment.pop("CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN", None)
+        environment.pop("CANDLESCOPE_SERVER_QUERY_CONTROL_BEARER_TOKEN", None)
     return await asyncio.create_subprocess_exec(
         sys.executable,
         str(QUERY_SCRIPT),
@@ -518,7 +819,11 @@ async def _start_query_service(group_id: str) -> asyncio.subprocess.Process:
     )
 
 
-async def _wait_ready(process: asyncio.subprocess.Process) -> None:
+async def _wait_ready(
+    process: asyncio.subprocess.Process,
+    *,
+    query_url: str = QUERY_URL,
+) -> None:
     deadline = asyncio.get_running_loop().time() + 15
     while asyncio.get_running_loop().time() < deadline:
         if process.returncode is not None:
@@ -529,7 +834,7 @@ async def _wait_ready(process: asyncio.subprocess.Process) -> None:
         try:
             async with (
                 aiohttp.ClientSession() as session,
-                session.get(f"{QUERY_URL}/health/ready") as response,
+                session.get(f"{query_url}/health/ready") as response,
             ):
                 if response.status == 200:
                     return
@@ -559,8 +864,9 @@ def _require_explicit_local_reset() -> None:
     if (
         os.environ.get("CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET") != "1"
         and os.environ.get("CANDLESCOPE_PHASE1G_ALLOW_TEST_RESET") != "1"
+        and os.environ.get("CANDLESCOPE_PHASE1H_ALLOW_TEST_RESET") != "1"
     ):
         raise RuntimeError(
-            "an explicit Phase 1F/1G reset flag is required because the "
+            "an explicit Phase 1F/1G/1H reset flag is required because the "
             "integration gate rebuilds its local topic, database, and bucket"
         )

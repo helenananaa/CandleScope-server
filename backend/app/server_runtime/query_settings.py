@@ -1,8 +1,9 @@
-"""Strict standalone settings for the Phase 1G snapshot query service."""
+"""Strict standalone settings for the Phase 1H snapshot query service."""
 
 from __future__ import annotations
 
 import os
+import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -26,9 +27,15 @@ class QueryServiceSettings:
     s3_access_key_id: str = field(repr=False)
     s3_secret_access_key: str = field(repr=False)
     auth_bearer_token: str = field(repr=False)
+    postgres_dsn: str | None = field(repr=False)
+    control_bearer_token: str | None = field(repr=False)
+    instance_id: str
+    control_backend: str = "postgres"
     clickhouse_database: str = "candlescope"
     clickhouse_writer_group_id: str = DEFAULT_GROUP_ID
     auth_principal: str = "candlescope-api-gateway"
+    control_principal: str = "candlescope-query-operator"
+    hot_backend_id: str = "clickhouse-market-events-v1"
     s3_region: str = "us-east-1"
     s3_prefix: str = "market-data"
     bind_host: str = "127.0.0.1"
@@ -45,6 +52,8 @@ class QueryServiceSettings:
     clickhouse_max_threads: int = 4
     s3_request_timeout_ms: int = 10_000
     kafka_request_timeout_ms: int = 10_000
+    postgres_connect_timeout_ms: int = 5_000
+    postgres_request_timeout_ms: int = 5_000
     parity_sample_interval_ms: int = 30_000
     parity_probe_capacity: int = 128
 
@@ -69,6 +78,9 @@ class QueryServiceSettings:
             "clickhouse_database",
             "clickhouse_writer_group_id",
             "auth_principal",
+            "control_principal",
+            "hot_backend_id",
+            "instance_id",
             "s3_endpoint_url",
             "s3_region",
             "s3_bucket",
@@ -87,6 +99,34 @@ class QueryServiceSettings:
                 "auth_bearer_token must contain at least 32 characters"
             )
         object.__setattr__(self, "auth_bearer_token", token)
+        if not isinstance(self.control_backend, str):
+            raise QueryServiceConfigurationError("control_backend must be a string")
+        control_backend = self.control_backend.strip().lower()
+        if control_backend not in {"postgres", "process"}:
+            raise QueryServiceConfigurationError(
+                "control_backend must be postgres or process"
+            )
+        object.__setattr__(self, "control_backend", control_backend)
+        if control_backend == "postgres":
+            postgres_dsn = _required_text(self.postgres_dsn, field="postgres_dsn")
+            control_token = _required_text(
+                self.control_bearer_token,
+                field="control_bearer_token",
+            )
+            if len(control_token) < 32:
+                raise QueryServiceConfigurationError(
+                    "control_bearer_token must contain at least 32 characters"
+                )
+            if secrets.compare_digest(token, control_token):
+                raise QueryServiceConfigurationError(
+                    "query and control bearer tokens must be distinct"
+                )
+            object.__setattr__(self, "postgres_dsn", postgres_dsn)
+            object.__setattr__(self, "control_bearer_token", control_token)
+        elif self.postgres_dsn is not None or self.control_bearer_token is not None:
+            raise QueryServiceConfigurationError(
+                "process control_backend cannot accept PostgreSQL/control credentials"
+            )
         if not isinstance(self.s3_prefix, str):
             raise QueryServiceConfigurationError("s3_prefix must be a string")
         object.__setattr__(self, "s3_prefix", self.s3_prefix.strip("/"))
@@ -104,6 +144,8 @@ class QueryServiceSettings:
             "clickhouse_max_threads",
             "s3_request_timeout_ms",
             "kafka_request_timeout_ms",
+            "postgres_connect_timeout_ms",
+            "postgres_request_timeout_ms",
             "parity_sample_interval_ms",
             "parity_probe_capacity",
         ):
@@ -147,9 +189,24 @@ class QueryServiceSettings:
             s3_access_key_id=_required_env(values, "S3_ACCESS_KEY_ID"),
             s3_secret_access_key=_required_env(values, "S3_SECRET_ACCESS_KEY"),
             auth_bearer_token=_required_env(values, "AUTH_BEARER_TOKEN"),
+            postgres_dsn=_optional_env(values, "POSTGRES_DSN"),
+            control_bearer_token=_optional_env(values, "CONTROL_BEARER_TOKEN"),
+            instance_id=_required_env(values, "INSTANCE_ID"),
+            control_backend=values.get(
+                f"{ENV_PREFIX}CONTROL_BACKEND",
+                "postgres",
+            ),
             auth_principal=values.get(
                 f"{ENV_PREFIX}AUTH_PRINCIPAL",
                 "candlescope-api-gateway",
+            ),
+            control_principal=values.get(
+                f"{ENV_PREFIX}CONTROL_PRINCIPAL",
+                "candlescope-query-operator",
+            ),
+            hot_backend_id=values.get(
+                f"{ENV_PREFIX}HOT_BACKEND_ID",
+                "clickhouse-market-events-v1",
             ),
             bind_host=values.get(f"{ENV_PREFIX}BIND_HOST", "127.0.0.1"),
             bind_port=_optional_int(values, "BIND_PORT", 8110),
@@ -205,6 +262,16 @@ class QueryServiceSettings:
                 "KAFKA_REQUEST_TIMEOUT_MS",
                 10_000,
             ),
+            postgres_connect_timeout_ms=_optional_int(
+                values,
+                "POSTGRES_CONNECT_TIMEOUT_MS",
+                5_000,
+            ),
+            postgres_request_timeout_ms=_optional_int(
+                values,
+                "POSTGRES_REQUEST_TIMEOUT_MS",
+                5_000,
+            ),
             parity_sample_interval_ms=_optional_int(
                 values,
                 "PARITY_SAMPLE_INTERVAL_MS",
@@ -236,6 +303,16 @@ def _optional_int(values: Mapping[str, str], suffix: str, default: int) -> int:
             f"setting {name} must be an unsigned base-10 integer"
         )
     return int(raw)
+
+
+def _optional_env(values: Mapping[str, str], suffix: str) -> str | None:
+    name = f"{ENV_PREFIX}{suffix}"
+    value = values.get(name)
+    if value is None:
+        return None
+    if not value.strip():
+        raise QueryServiceConfigurationError(f"setting {name} cannot be blank")
+    return value.strip()
 
 
 def _required_text(value: object, *, field: str) -> str:

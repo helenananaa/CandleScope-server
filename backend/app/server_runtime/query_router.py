@@ -1,4 +1,4 @@
-"""Proof-oriented hot/cold routing and parity quarantine for Phase 1G."""
+"""Proof-oriented hot/cold routing with shared Phase 1H quarantine state."""
 
 from __future__ import annotations
 
@@ -17,6 +17,12 @@ from app.server_contracts import (
     MarketEventPage,
 )
 from app.server_runtime.query_cursor import ProjectionCursorReader
+from app.server_runtime.query_control import (
+    ClearHotProjectionQuarantineCommand,
+    HotProjectionControlState,
+    HotProjectionControlStore,
+    InProcessHotProjectionControlStore,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +96,8 @@ class SnapshotParityStatus:
     samples_failed: int
     hot_quarantined: bool
     quarantine_reason: str | None
+    quarantine_generation: int
+    quarantine_latched_by: str | None
     last_sample_at_ms: int | None
 
     def to_wire(self) -> dict[str, object]:
@@ -101,6 +109,8 @@ class SnapshotParityStatus:
             "samples_failed": self.samples_failed,
             "hot_quarantined": self.hot_quarantined,
             "quarantine_reason": self.quarantine_reason,
+            "quarantine_generation": self.quarantine_generation,
+            "quarantine_latched_by": self.quarantine_latched_by,
             "last_sample_at_ms": self.last_sample_at_ms,
         }
 
@@ -114,12 +124,20 @@ class SnapshotQueryRouter:
         cold_query: LifecycleSnapshotMarketEventQuery,
         hot_query: LifecycleSnapshotMarketEventQuery,
         projection_cursor: ProjectionCursorReader,
+        quarantine_store: HotProjectionControlStore | None = None,
         parity_sample_interval_ms: int = 30_000,
         parity_probe_capacity: int = 128,
     ) -> None:
         self._cold_query = cold_query
         self._hot_query = hot_query
         self._projection_cursor = projection_cursor
+        self._quarantine_store = (
+            InProcessHotProjectionControlStore()
+            if quarantine_store is None
+            else quarantine_store
+        )
+        if not isinstance(self._quarantine_store, HotProjectionControlStore):
+            raise TypeError("quarantine_store must implement HotProjectionControlStore")
         self._parity_sample_interval_ms = _positive_int(
             parity_sample_interval_ms,
             field="parity_sample_interval_ms",
@@ -137,7 +155,9 @@ class SnapshotQueryRouter:
         self._samples_passed = 0
         self._samples_skipped_lag = 0
         self._samples_failed = 0
-        self._quarantine_reason: str | None = None
+        self._quarantine_state = HotProjectionControlState.initial(
+            "clickhouse-market-events-v1"
+        )
         self._last_sample_at_ms: int | None = None
 
     @property
@@ -147,24 +167,40 @@ class SnapshotQueryRouter:
     async def start(self) -> None:
         if self._started:
             raise SnapshotQueryRouteError("snapshot query router is already started")
-        await self._cold_query.start()
+        control_started = False
+        cold_started = False
+        hot_started = False
+        cursor_started = False
         try:
+            await self._quarantine_store.start()
+            control_started = True
+            await self._cold_query.start()
+            cold_started = True
             await self._hot_query.start()
-        except BaseException:
-            await self._cold_query.stop()
-            raise
-        try:
+            hot_started = True
             await self._projection_cursor.start()
+            cursor_started = True
+            await self._refresh_quarantine()
         except BaseException:
             try:
-                await self._hot_query.stop()
+                if cursor_started:
+                    await self._projection_cursor.stop()
             finally:
-                await self._cold_query.stop()
+                try:
+                    if hot_started:
+                        await self._hot_query.stop()
+                finally:
+                    try:
+                        if cold_started:
+                            await self._cold_query.stop()
+                    finally:
+                        if control_started:
+                            await self._quarantine_store.stop()
             raise
         self._started = True
         self._parity_task = asyncio.create_task(
             self._parity_loop(),
-            name="candlescope-phase1g-parity-sampler",
+            name="candlescope-phase1h-parity-sampler",
         )
 
     async def stop(self) -> None:
@@ -183,7 +219,10 @@ class SnapshotQueryRouter:
             finally:
                 await self._hot_query.stop()
         finally:
-            await self._cold_query.stop()
+            try:
+                await self._cold_query.stop()
+            finally:
+                await self._quarantine_store.stop()
 
     async def query(
         self,
@@ -217,9 +256,10 @@ class SnapshotQueryRouter:
                 page=cold_page,
                 hot_committed_next_offset=None,
                 parity_verified=False,
-                hot_quarantined=self._quarantine_reason is not None,
+                hot_quarantined=self._quarantine_state.active,
             )
-        if self._quarantine_reason is not None:
+        await self._refresh_quarantine()
+        if self._quarantine_state.active:
             if preference is QueryPreference.HOT:
                 raise HotProjectionQuarantinedError(
                     "ClickHouse hot queries are quarantined after a parity failure"
@@ -246,9 +286,22 @@ class SnapshotQueryRouter:
             )
         hot_page = await self._hot_query.query(**arguments)
         if hot_page != cold_page:
-            self._quarantine("foreground hot/cold page mismatch")
+            await self._quarantine("foreground hot/cold page mismatch")
             raise HotProjectionParityError(
                 "ClickHouse and Parquet pages differ for the requested snapshot"
+            )
+        await self._refresh_quarantine()
+        if self._quarantine_state.active:
+            if preference is QueryPreference.HOT:
+                raise HotProjectionQuarantinedError(
+                    "ClickHouse hot queries were quarantined during parity proof"
+                )
+            return SnapshotQueryRouteResult(
+                backend="cold",
+                page=cold_page,
+                hot_committed_next_offset=committed,
+                parity_verified=False,
+                hot_quarantined=True,
             )
         self._register_probe(
             SnapshotParityProbe(
@@ -275,10 +328,38 @@ class SnapshotQueryRouter:
             samples_passed=self._samples_passed,
             samples_skipped_lag=self._samples_skipped_lag,
             samples_failed=self._samples_failed,
-            hot_quarantined=self._quarantine_reason is not None,
-            quarantine_reason=self._quarantine_reason,
+            hot_quarantined=self._quarantine_state.active,
+            quarantine_reason=self._quarantine_state.reason,
+            quarantine_generation=self._quarantine_state.generation,
+            quarantine_latched_by=self._quarantine_state.latched_by,
             last_sample_at_ms=self._last_sample_at_ms,
         )
+
+    async def hot_control_status(
+        self,
+        *,
+        refresh: bool = True,
+    ) -> HotProjectionControlState:
+        if not self._started:
+            raise SnapshotQueryRouteError("snapshot query router is not started")
+        if refresh:
+            await self._refresh_quarantine()
+        return self._quarantine_state
+
+    async def clear_hot_quarantine(
+        self,
+        command: ClearHotProjectionQuarantineCommand,
+    ) -> HotProjectionControlState:
+        if not self._started:
+            raise SnapshotQueryRouteError("snapshot query router is not started")
+        state = await self._quarantine_store.clear(command)
+        self._apply_quarantine_state(state)
+        logger.warning(
+            "ClickHouse snapshot query quarantine generation %s cleared by %s",
+            state.generation,
+            command.principal,
+        )
+        return state
 
     def _register_probe(self, probe: SnapshotParityProbe) -> None:
         key = (
@@ -297,6 +378,15 @@ class SnapshotQueryRouter:
     async def _parity_loop(self) -> None:
         while True:
             await asyncio.sleep(self._parity_sample_interval_ms / 1_000)
+            try:
+                await self._refresh_quarantine()
+            except asyncio.CancelledError:
+                raise
+            except (RuntimeError, TypeError, ValueError) as exc:
+                logger.warning("shared snapshot quarantine refresh failed: %s", exc)
+                continue
+            if self._quarantine_state.active:
+                continue
             probe = self._next_probe()
             if probe is None:
                 continue
@@ -328,7 +418,7 @@ class SnapshotQueryRouter:
             hot_page = await self._hot_query.query(**arguments)
             if hot_page != cold_page:
                 self._samples_failed += 1
-                self._quarantine("background hot/cold page mismatch")
+                await self._quarantine("background hot/cold page mismatch")
                 return
             self._samples_passed += 1
         except asyncio.CancelledError:
@@ -339,10 +429,24 @@ class SnapshotQueryRouter:
         finally:
             self._last_sample_at_ms = time.time_ns() // 1_000_000
 
-    def _quarantine(self, reason: str) -> None:
-        if self._quarantine_reason is None:
-            self._quarantine_reason = reason
-            logger.error("ClickHouse snapshot query backend quarantined: %s", reason)
+    async def _refresh_quarantine(self) -> None:
+        self._apply_quarantine_state(await self._quarantine_store.status())
+
+    async def _quarantine(self, reason: str) -> None:
+        was_active = self._quarantine_state.active
+        state = await self._quarantine_store.latch(reason)
+        self._apply_quarantine_state(state)
+        if not was_active and state.active:
+            logger.error(
+                "ClickHouse snapshot query backend quarantined at generation %s: %s",
+                state.generation,
+                reason,
+            )
+
+    def _apply_quarantine_state(self, state: HotProjectionControlState) -> None:
+        if not isinstance(state, HotProjectionControlState):
+            raise TypeError("quarantine store returned an invalid state")
+        self._quarantine_state = state
 
 
 def _positive_int(value: object, *, field: str) -> int:

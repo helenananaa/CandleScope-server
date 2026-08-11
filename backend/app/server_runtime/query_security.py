@@ -1,14 +1,16 @@
-"""Internal authentication and redacted query-audit contracts for Phase 1G."""
+"""Internal authentication and redacted query-control audit contracts."""
 
 from __future__ import annotations
 
 import json
 import logging
 import secrets
+import uuid
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Protocol, runtime_checkable
 
-QUERY_AUDIT_SCHEMA_VERSION = "candlescope.snapshot-query-audit.v1"
+QUERY_AUDIT_SCHEMA_VERSION = "candlescope.query-control-audit.v2"
 
 
 class QueryAuthenticationError(RuntimeError):
@@ -52,11 +54,19 @@ class QueryAuditEvent:
     partition_key: str | None = None
     preference: str | None = None
     backend: str | None = None
+    control_generation: int | None = None
+    reason_code: str | None = None
+    event_id: str = dataclass_field(default_factory=lambda: str(uuid.uuid4()))
     schema_version: str = QUERY_AUDIT_SCHEMA_VERSION
 
     def __post_init__(self) -> None:
         if self.schema_version != QUERY_AUDIT_SCHEMA_VERSION:
             raise ValueError("query audit schema_version has drifted")
+        try:
+            event_id = str(uuid.UUID(self.event_id))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("event_id must be a UUID") from exc
+        object.__setattr__(self, "event_id", event_id)
         for field in ("request_id", "action", "outcome"):
             object.__setattr__(
                 self,
@@ -86,10 +96,32 @@ class QueryAuditEvent:
                 "manifest_sha256",
                 _sha256(self.manifest_sha256, field="manifest_sha256"),
             )
+        if self.control_generation is not None:
+            generation = _non_negative_int(
+                self.control_generation,
+                field="control_generation",
+            )
+            if generation == 0:
+                raise ValueError("control_generation must be positive")
+            object.__setattr__(self, "control_generation", generation)
+        if self.reason_code is not None:
+            reason_code = _required_text(self.reason_code, field="reason_code")
+            if (
+                len(reason_code) > 128
+                or not reason_code.isascii()
+                or reason_code[0] not in "abcdefghijklmnopqrstuvwxyz0123456789"
+                or not all(
+                    character in "abcdefghijklmnopqrstuvwxyz0123456789._:-"
+                    for character in reason_code
+                )
+            ):
+                raise ValueError("reason_code must use lower-case safe ASCII")
+            object.__setattr__(self, "reason_code", reason_code)
 
     def to_wire(self) -> dict[str, object]:
         return {
             "schema_version": self.schema_version,
+            "event_id": self.event_id,
             "request_id": self.request_id,
             "principal": self.principal,
             "action": self.action,
@@ -97,11 +129,19 @@ class QueryAuditEvent:
             "status_code": self.status_code,
             "timestamp_ms": self.timestamp_ms,
             "latency_ms": self.latency_ms,
-            "snapshot_version": self.snapshot_version,
+            "snapshot_version": (
+                None if self.snapshot_version is None else str(self.snapshot_version)
+            ),
             "manifest_sha256": self.manifest_sha256,
             "partition_key": self.partition_key,
             "preference": self.preference,
             "backend": self.backend,
+            "control_generation": (
+                None
+                if self.control_generation is None
+                else str(self.control_generation)
+            ),
+            "reason_code": self.reason_code,
         }
 
 

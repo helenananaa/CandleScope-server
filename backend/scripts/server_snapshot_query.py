@@ -1,4 +1,4 @@
-"""Standalone Phase 1G snapshot query HTTP service entrypoint."""
+"""Standalone Phase 1H snapshot query HTTP service entrypoint."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from app.server_runtime.query_settings import QueryServiceSettings
 from app.server_runtime.storage.clickhouse_query import (
     ClickHouseSnapshotMarketEventQuery,
 )
+from app.server_runtime.storage.postgres_query_control import (
+    PostgresQueryControlStore,
+)
 from app.server_runtime.storage.parquet_archive import (
     ImmutableParquetMarketEventArchive,
     ParquetMarketEventQuery,
@@ -25,6 +28,24 @@ from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 
 
 def build_app(settings: QueryServiceSettings):
+    control_store: PostgresQueryControlStore | None = None
+    audit_sink = StructuredLogQueryAuditSink()
+    control_authenticator: BearerTokenAuthenticator | None = None
+    if settings.control_backend == "postgres":
+        if settings.postgres_dsn is None or settings.control_bearer_token is None:
+            raise RuntimeError("validated PostgreSQL control settings are missing")
+        control_store = PostgresQueryControlStore(
+            settings.postgres_dsn,
+            instance_id=settings.instance_id,
+            backend_id=settings.hot_backend_id,
+            connect_timeout_ms=settings.postgres_connect_timeout_ms,
+            request_timeout_ms=settings.postgres_request_timeout_ms,
+        )
+        audit_sink = control_store
+        control_authenticator = BearerTokenAuthenticator(
+            token=settings.control_bearer_token,
+            principal=settings.control_principal,
+        )
     store = S3ImmutableObjectStore(
         endpoint_url=settings.s3_endpoint_url,
         region=settings.s3_region,
@@ -59,11 +80,12 @@ def build_app(settings: QueryServiceSettings):
         projection_cursor=KafkaProjectionCursorReader(
             bootstrap_servers=settings.kafka_bootstrap_servers,
             group_id=settings.clickhouse_writer_group_id,
-            client_id="candlescope-phase1g-query-cursor",
+            client_id=f"candlescope-phase1h-query-cursor-{settings.instance_id}",
             connection_options={
                 "request_timeout_ms": settings.kafka_request_timeout_ms,
             },
         ),
+        quarantine_store=control_store,
         parity_sample_interval_ms=settings.parity_sample_interval_ms,
         parity_probe_capacity=settings.parity_probe_capacity,
     )
@@ -73,7 +95,8 @@ def build_app(settings: QueryServiceSettings):
             token=settings.auth_bearer_token,
             principal=settings.auth_principal,
         ),
-        audit_sink=StructuredLogQueryAuditSink(),
+        audit_sink=audit_sink,
+        control_authenticator=control_authenticator,
         max_concurrent_queries=settings.max_concurrent_queries,
         query_queue_timeout_ms=settings.query_queue_timeout_ms,
     )

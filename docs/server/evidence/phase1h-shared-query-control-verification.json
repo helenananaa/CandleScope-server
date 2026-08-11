@@ -1,0 +1,150 @@
+{
+  "schema_version": "candlescope.server-phase1h-shared-query-control-verification.v1",
+  "captured_at_utc": "2026-08-11T11:01:22Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "88d980ec42828d8bfb9678d6f36a90144aed2fa4",
+  "phase": "phase1h-postgres-shared-query-control",
+  "phase1h_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "default_control_backend": "postgres",
+    "historical_regression_backend": "explicit process mode"
+  },
+  "configuration": {
+    "required_instance_id": true,
+    "required_postgres_dsn": true,
+    "required_separate_control_bearer": true,
+    "query_and_control_tokens_must_differ": true,
+    "minimum_token_characters": 32,
+    "credentials_redacted_from_settings_repr": true,
+    "postgres_connect_timeout_ms": 5000,
+    "postgres_request_timeout_ms": 5000,
+    "concurrent_schema_initialization": "transaction advisory lock"
+  },
+  "shared_quarantine": {
+    "table": "candlescope_query_hot_quarantine",
+    "identity": "clickhouse-market-events-v1",
+    "generation_fenced": true,
+    "first_latch_preserved_while_active": true,
+    "read_on_startup": true,
+    "read_on_readiness": true,
+    "read_before_auto_or_hot_query": true,
+    "read_by_background_sampler": true,
+    "process_restart_clears_state": false,
+    "automatic_clear": false,
+    "successful_clear_and_audit_same_transaction": true
+  },
+  "control_api": {
+    "inspect_route": "GET /api/v1/server/control/hot-projection",
+    "clear_route": "POST /api/v1/server/control/hot-projection/clear",
+    "separate_control_principal": "candlescope-query-operator",
+    "query_token_can_control": false,
+    "expected_generation_required": true,
+    "stale_generation_status": 409,
+    "safe_reason_code_required": true
+  },
+  "audit": {
+    "schema_version": "candlescope.query-control-audit.v2",
+    "event_table": "candlescope_query_audit_event",
+    "head_table": "candlescope_query_audit_head",
+    "event_id": "UUID",
+    "large_snapshot_and_generation_identifiers": "I-JSON decimal strings",
+    "canonicalization": "RFC 8785",
+    "hash_formula": "SHA256(bytes(previous_hash) || RFC8785(event_json))",
+    "head_serialization": "SELECT FOR UPDATE",
+    "bounded_verifier": true,
+    "real_gate_record_count": 11,
+    "deliberate_event_json_mutation_detected": true,
+    "forbidden_fields_absent": [
+      "query bearer token",
+      "control bearer token",
+      "PostgreSQL password",
+      "ClickHouse password",
+      "S3 secret",
+      "market event envelope",
+      "market event payload"
+    ],
+    "external_signature_or_anchor": false
+  },
+  "real_multi_instance_gate": {
+    "infrastructure": [
+      "PostgreSQL 18.4-bookworm",
+      "Redpanda 26.1.14",
+      "ClickHouse 26.3.17.56",
+      "MinIO RELEASE.2025-09-07T16-13-09Z",
+      "three independently started Uvicorn query processes"
+    ],
+    "snapshot_version": 4,
+    "initial_instances": ["phase1h-query-a", "phase1h-query-b"],
+    "restart_instance": "phase1h-query-c",
+    "instance_b_sample_interval_ms": 60000,
+    "initial_hot_parity_passed": true,
+    "fault_injection": "replace ClickHouse first-fact envelope with a different internally canonical same-identity envelope",
+    "detector": "phase1h-query-a background sampler",
+    "latched_generation": 1,
+    "non_sampling_instance_auto_route": "cold",
+    "query_token_control_status": 401,
+    "state_survived_detector_process_exit": true,
+    "new_instance_loaded_quarantine_on_startup": true,
+    "forced_hot_while_quarantined_status": 503,
+    "projection_repaired_before_clear": true,
+    "stale_generation_clear_status": 409,
+    "matching_generation_clear_status": 200,
+    "other_instance_after_clear": "verified hot",
+    "all_query_process_sigint_exit_codes": 0,
+    "audit_chain_verified": true,
+    "audit_mutation_fault_detected": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1A through 1H unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py",
+      "result": "61 passed"
+    },
+    {
+      "name": "Phase 1H real multi-instance shared quarantine, manual clear, and audit-chain gate",
+      "command": "CANDLESCOPE_PHASE1H_INTEGRATION=1 CANDLESCOPE_PHASE1H_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1G real authentication, quota, parity, and process quarantine regression",
+      "command": "CANDLESCOPE_PHASE1G_INTEGRATION=1 CANDLESCOPE_PHASE1G_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1F real HTTP hot parity and lagged cold route regression",
+      "command": "CANDLESCOPE_PHASE1F_INTEGRATION=1 CANDLESCOPE_PHASE1F_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1f_snapshot_query.py",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1H static, dependency, Compose, JSON, and patch hygiene",
+      "result": "ruff check and format passed for 11 files; compileall passed; uv pip check passed for 70 packages; Phase 1H Compose config passed; evidence JSON parsed; git diff --check passed"
+    }
+  ],
+  "claims_not_made": [
+    "internal bearer authentication is end-user, organization, or workspace authorization",
+    "mTLS, OIDC, token rotation, revocation, or a production secret manager is configured",
+    "the database hash chain is externally signed, anchored, or resistant to a fully privileged database administrator",
+    "PostgreSQL least-privilege roles, WAL archive, backup restore, retention, partitioning, or HA are production configured",
+    "a production audit query API or retention policy is implemented",
+    "quarantine repair orchestration, alert routing, or dual approval is implemented",
+    "ClickHouse server-side users, grants, resource groups, or quotas are production configured",
+    "same-stream event-time Parquet pruning or long-manifest compaction is implemented",
+    "24 hour public-exchange continuity, node restart, network partition, disaster recovery, or production capacity has passed",
+    "WebSocket fan-out or Replay Worker snapshot integration is implemented",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

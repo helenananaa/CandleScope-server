@@ -1,4 +1,4 @@
-"""Authenticated and audited HTTP boundary for Phase 1G snapshot queries."""
+"""Authenticated Phase 1H snapshot-query and projection-control boundary."""
 
 from __future__ import annotations
 
@@ -21,6 +21,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.data_engine.market_data import MarketStreamKey
 from app.server_contracts import MarketDataSnapshotRef, MarketEventCursor
 from app.server_runtime.object_store import ObjectStoreError
+from app.server_runtime.query_control import (
+    ClearHotProjectionQuarantineCommand,
+    HotProjectionGenerationConflictError,
+    HotProjectionNotQuarantinedError,
+    QueryControlError,
+)
 from app.server_runtime.query_cursor import ProjectionCursorError
 from app.server_runtime.query_router import (
     HotProjectionParityError,
@@ -98,6 +104,17 @@ class SnapshotQueryRequest(_StrictModel):
     preference: Literal["auto", "hot", "cold"] = "auto"
 
 
+class ClearHotProjectionQuarantineRequest(_StrictModel):
+    expected_generation: Annotated[
+        int,
+        Field(gt=0, le=9_223_372_036_854_775_807),
+    ]
+    reason_code: Annotated[
+        str,
+        Field(pattern=r"^[a-z0-9][a-z0-9._:-]{0,127}$"),
+    ]
+
+
 @dataclass(slots=True)
 class QueryApiMetrics:
     requests_total: int = 0
@@ -108,6 +125,8 @@ class QueryApiMetrics:
     parity_failures_total: int = 0
     overload_rejections_total: int = 0
     unauthorized_total: int = 0
+    control_unauthorized_total: int = 0
+    quarantine_clears_total: int = 0
     audit_failures_total: int = 0
 
     def to_wire(self) -> dict[str, int]:
@@ -120,6 +139,8 @@ class QueryApiMetrics:
             "parity_failures_total": self.parity_failures_total,
             "overload_rejections_total": self.overload_rejections_total,
             "unauthorized_total": self.unauthorized_total,
+            "control_unauthorized_total": self.control_unauthorized_total,
+            "quarantine_clears_total": self.quarantine_clears_total,
             "audit_failures_total": self.audit_failures_total,
         }
 
@@ -129,6 +150,7 @@ def create_snapshot_query_app(
     router: SnapshotQueryRouter,
     authenticator: BearerTokenAuthenticator,
     audit_sink: QueryAuditSink,
+    control_authenticator: BearerTokenAuthenticator | None = None,
     max_concurrent_queries: int = 16,
     query_queue_timeout_ms: int = 1_000,
 ) -> FastAPI:
@@ -138,6 +160,11 @@ def create_snapshot_query_app(
         raise TypeError("authenticator must be a BearerTokenAuthenticator")
     if not isinstance(audit_sink, QueryAuditSink):
         raise TypeError("audit_sink must implement QueryAuditSink")
+    if control_authenticator is not None and not isinstance(
+        control_authenticator,
+        BearerTokenAuthenticator,
+    ):
+        raise TypeError("control_authenticator must be a BearerTokenAuthenticator")
     max_concurrent_queries = _positive_int(
         max_concurrent_queries,
         field="max_concurrent_queries",
@@ -162,7 +189,7 @@ def create_snapshot_query_app(
 
     app = FastAPI(
         title="CandleScope Snapshot Query Service",
-        version="1g",
+        version="1h",
         lifespan=lifespan,
     )
     bearer = HTTPBearer(auto_error=False)
@@ -245,6 +272,43 @@ def create_snapshot_query_app(
                 headers={"WWW-Authenticate": "Bearer"},
             ) from exc
 
+    async def authorize_control(
+        request: Request,
+        credentials: HTTPAuthorizationCredentials | None = bearer_dependency,
+    ) -> str:
+        if control_authenticator is None:  # pragma: no cover - route invariant
+            raise HTTPException(status_code=404, detail={"code": "NOT_FOUND"})
+        try:
+            credential = None if credentials is None else credentials.credentials
+            principal = control_authenticator.authenticate(credential)
+            request.state.query_principal = principal
+            return principal
+        except QueryAuthenticationError as exc:
+            metrics.control_unauthorized_total += 1
+            try:
+                await audit_sink.emit(
+                    QueryAuditEvent(
+                        request_id=request.state.query_request_id,
+                        principal=None,
+                        action="authorize_query_control",
+                        outcome="denied",
+                        status_code=401,
+                        timestamp_ms=time.time_ns() // 1_000_000,
+                        latency_ms=0,
+                    )
+                )
+            except Exception as audit_exc:
+                metrics.audit_failures_total += 1
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "QUERY_AUDIT_UNAVAILABLE"},
+                ) from audit_exc
+            raise HTTPException(
+                status_code=401,
+                detail={"code": "QUERY_CONTROL_AUTHENTICATION_REQUIRED"},
+                headers={"WWW-Authenticate": "Bearer"},
+            ) from exc
+
     @app.exception_handler(RequestValidationError)
     async def validation_error_handler(
         request: Request,
@@ -257,7 +321,11 @@ def create_snapshot_query_app(
                 QueryAuditEvent(
                     request_id=request_id,
                     principal=principal,
-                    action="validate_snapshot_query_request",
+                    action=(
+                        "validate_hot_projection_clear_request"
+                        if request.url.path.endswith("/hot-projection/clear")
+                        else "validate_snapshot_query_request"
+                    ),
                     outcome="invalid_request",
                     status_code=422,
                     timestamp_ms=time.time_ns() // 1_000_000,
@@ -274,17 +342,24 @@ def create_snapshot_query_app(
 
     @app.get("/health/live")
     async def live() -> dict[str, object]:
-        return {"status": "live", "phase": "1g"}
+        return {"status": "live", "phase": "1h"}
 
     @app.get("/health/ready")
     async def ready() -> dict[str, object]:
         if not state["ready"]:
             raise HTTPException(status_code=503, detail={"code": "NOT_READY"})
-        parity = router.parity_status()
+        try:
+            control = await router.hot_control_status(refresh=True)
+        except QueryControlError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"code": "QUERY_CONTROL_UNAVAILABLE"},
+            ) from exc
         return {
             "status": "ready",
-            "phase": "1g",
-            "hot_status": ("quarantined" if parity.hot_quarantined else "available"),
+            "phase": "1h",
+            "hot_status": ("quarantined" if control.active else "available"),
+            "quarantine_generation": control.generation,
         }
 
     @app.get("/metrics")
@@ -292,6 +367,105 @@ def create_snapshot_query_app(
         _principal: str = Depends(authorize),
     ) -> dict[str, object]:
         return {**metrics.to_wire(), "parity": router.parity_status().to_wire()}
+
+    if control_authenticator is not None:
+
+        @app.get("/api/v1/server/control/hot-projection")
+        async def hot_projection_control_status(
+            http_request: Request,
+            principal: str = Depends(authorize_control),
+        ) -> dict[str, object]:
+            started_ns = time.monotonic_ns()
+            try:
+                control = await router.hot_control_status(refresh=True)
+                await audit_sink.emit(
+                    QueryAuditEvent(
+                        request_id=http_request.state.query_request_id,
+                        principal=principal,
+                        action="inspect_hot_projection_quarantine",
+                        outcome="success",
+                        status_code=200,
+                        timestamp_ms=time.time_ns() // 1_000_000,
+                        latency_ms=(time.monotonic_ns() - started_ns) // 1_000_000,
+                        backend=control.backend_id,
+                        control_generation=(
+                            control.generation if control.generation > 0 else None
+                        ),
+                    )
+                )
+            except QueryControlError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "QUERY_CONTROL_UNAVAILABLE"},
+                ) from exc
+            except Exception as exc:
+                metrics.audit_failures_total += 1
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "QUERY_AUDIT_UNAVAILABLE"},
+                ) from exc
+            return {"hot_projection": control.to_wire()}
+
+        @app.post("/api/v1/server/control/hot-projection/clear")
+        async def clear_hot_projection_control(
+            clear_request: ClearHotProjectionQuarantineRequest,
+            http_request: Request,
+            principal: str = Depends(authorize_control),
+        ) -> dict[str, object]:
+            request_id = http_request.state.query_request_id
+            try:
+                control = await router.clear_hot_quarantine(
+                    ClearHotProjectionQuarantineCommand(
+                        expected_generation=clear_request.expected_generation,
+                        principal=principal,
+                        reason_code=clear_request.reason_code,
+                        request_id=request_id,
+                        timestamp_ms=time.time_ns() // 1_000_000,
+                    )
+                )
+            except HotProjectionGenerationConflictError as exc:
+                await _audit_control_rejection(
+                    audit_sink=audit_sink,
+                    metrics=metrics,
+                    request_id=request_id,
+                    principal=principal,
+                    outcome="generation_conflict",
+                    generation=clear_request.expected_generation,
+                    reason_code=clear_request.reason_code,
+                    backend=(await router.hot_control_status(refresh=False)).backend_id,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "HOT_PROJECTION_GENERATION_CONFLICT",
+                        "message": str(exc),
+                    },
+                ) from exc
+            except HotProjectionNotQuarantinedError as exc:
+                await _audit_control_rejection(
+                    audit_sink=audit_sink,
+                    metrics=metrics,
+                    request_id=request_id,
+                    principal=principal,
+                    outcome="not_quarantined",
+                    generation=clear_request.expected_generation,
+                    reason_code=clear_request.reason_code,
+                    backend=(await router.hot_control_status(refresh=False)).backend_id,
+                )
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "HOT_PROJECTION_NOT_QUARANTINED",
+                        "message": str(exc),
+                    },
+                ) from exc
+            except QueryControlError as exc:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "QUERY_CONTROL_UNAVAILABLE"},
+                ) from exc
+            metrics.quarantine_clears_total += 1
+            return {"hot_projection": control.to_wire()}
 
     @app.post("/api/v1/server/market-events/query")
     async def query(
@@ -389,6 +563,7 @@ def create_snapshot_query_app(
             ObjectStoreError,
             ParquetArchiveError,
             ProjectionCursorError,
+            QueryControlError,
         ) as exc:
             metrics.failures_total += 1
             status_code = 503
@@ -537,3 +712,37 @@ def _audit_sha256(value: str) -> str | None:
     ):
         return None
     return normalized
+
+
+async def _audit_control_rejection(
+    *,
+    audit_sink: QueryAuditSink,
+    metrics: QueryApiMetrics,
+    request_id: str,
+    principal: str,
+    outcome: str,
+    generation: int,
+    reason_code: str,
+    backend: str,
+) -> None:
+    try:
+        await audit_sink.emit(
+            QueryAuditEvent(
+                request_id=request_id,
+                principal=principal,
+                action="clear_hot_projection_quarantine",
+                outcome=outcome,
+                status_code=409,
+                timestamp_ms=time.time_ns() // 1_000_000,
+                latency_ms=0,
+                backend=backend,
+                control_generation=generation,
+                reason_code=reason_code,
+            )
+        )
+    except Exception as exc:
+        metrics.audit_failures_total += 1
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "QUERY_AUDIT_UNAVAILABLE"},
+        ) from exc

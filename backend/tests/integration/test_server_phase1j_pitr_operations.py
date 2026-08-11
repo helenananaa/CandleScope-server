@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
 import shutil
+import tempfile
 import time
 import uuid
 from pathlib import Path
 
 import psycopg
 import pytest
-from app.server_runtime.query_control import QueryControlWriteFencedError
+from psycopg import sql
+
 from app.server_runtime.query_audit_anchor import (
     ImmutableQueryAuditAnchorRepository,
     QueryAuditAnchorSigner,
@@ -19,8 +23,11 @@ from app.server_runtime.query_backup_catalog import (
     PhysicalBackupManifestSigner,
     PhysicalBackupRequest,
     PhysicalBackupWalSegment,
+    PublishedPhysicalBackup,
     parse_postgres_backup_manifest,
 )
+from app.server_runtime.query_backup_selection import BackupJobReceipt
+from app.server_runtime.query_control import QueryControlWriteFencedError
 from app.server_runtime.query_migrations import (
     QUERY_AUDITOR_GROUP_ROLE,
     QUERY_CONTROL_MIGRATION_TABLE,
@@ -44,7 +51,7 @@ from app.server_runtime.storage.postgres_query_control import (
     PostgresQueryControlStore,
 )
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
-from psycopg import sql
+from scripts import server_query_backup_select
 
 COMPOSE_PATH = Path(__file__).resolve().parents[3] / "deploy/server/compose.phase1j.yml"
 MIGRATION_PATH = (
@@ -261,6 +268,12 @@ async def _run_gate() -> None:
     finally:
         await fence.release()
 
+    await _exercise_phase1n_selection(
+        prefix=prefix,
+        published_backup=published_backup,
+        request=request,
+    )
+
     await asyncio.sleep(0.05)
     runtime = PostgresQueryControlStore(RUNTIME_DSN, instance_id="phase1j-primary")
     await runtime.start()
@@ -317,6 +330,104 @@ async def _run_gate() -> None:
     async with await psycopg.AsyncConnection.connect(RECOVERY_ADMIN_DSN) as connection:
         in_recovery = await connection.execute("SELECT pg_is_in_recovery()")
         assert (await in_recovery.fetchone())[0] is False
+
+
+async def _exercise_phase1n_selection(
+    *,
+    prefix: str,
+    published_backup: PublishedPhysicalBackup,
+    request: PhysicalBackupRequest,
+) -> None:
+    started_at_ms = request.write_fence_acquired_at_ms - 1_000
+    completed_at_ms = time.time_ns() // 1_000_000
+    receipt = BackupJobReceipt(
+        run_id=request.backup_id,
+        backup_id=request.backup_id,
+        started_at_ms=started_at_ms,
+        completed_at_ms=completed_at_ms,
+        duration_ms=completed_at_ms - started_at_ms,
+        manifest_uri=published_backup.manifest_uri,
+        manifest_sha256=published_backup.manifest_sha256,
+        audit_anchor_uri=request.audit_anchor_uri,
+        audit_anchor_sha256=request.audit_anchor_sha256,
+        recovery_target_time=request.recovery_target_time,
+        recovery_target_lsn=request.recovery_target_lsn,
+        recovery_target_wal_filename=request.wal_coverage[-1].filename,
+        wal_coverage_segment_count=len(request.wal_coverage),
+        write_fence_id=request.write_fence_id,
+        operator_id="phase1j-backup-window",
+    )
+    with tempfile.TemporaryDirectory(prefix="candlescope-phase1n-") as directory:
+        path = Path(directory) / "phase1m-receipt.json"
+        path.write_text(
+            json.dumps(receipt.to_wire(), sort_keys=True, separators=(",", ":")) + "\n",
+            encoding="utf-8",
+        )
+        path.chmod(0o600)
+        with pytest.MonkeyPatch.context() as monkeypatch:
+            settings = {
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_REGION": "us-east-1",
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_BUCKET": S3_BUCKET,
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_PREFIX": prefix,
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ACCESS_KEY_ID": (S3_ACCESS_KEY_ID),
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_SECRET_ACCESS_KEY": (
+                    S3_SECRET_ACCESS_KEY
+                ),
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_BACKUP_HMAC_KEY_ID": (
+                    "phase1j-backup-key"
+                ),
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_BACKUP_HMAC_SECRET_BASE64": (
+                    base64.b64encode(BACKUP_HMAC_SECRET).decode()
+                ),
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_CLUSTER_ID": CLUSTER_ID,
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_MAX_ARTIFACT_BYTES": str(
+                    64 * 1024 * 1024
+                ),
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_MAX_TOTAL_BYTES": str(
+                    128 * 1024 * 1024
+                ),
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_ENDPOINT_URL": (
+                    S3_ENDPOINT_URL
+                ),
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_REGION": "us-east-1",
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_BUCKET": S3_BUCKET,
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_PREFIX": prefix,
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_ACCESS_KEY_ID": (
+                    S3_ACCESS_KEY_ID
+                ),
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_SECRET_ACCESS_KEY": (
+                    S3_SECRET_ACCESS_KEY
+                ),
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_HMAC_KEY_ID": (
+                    "phase1j-audit-key"
+                ),
+                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_HMAC_SECRET_BASE64": (
+                    base64.b64encode(AUDIT_HMAC_SECRET).decode()
+                ),
+                "CANDLESCOPE_SERVER_QUERY_WAL_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
+                "CANDLESCOPE_SERVER_QUERY_WAL_S3_REGION": "us-east-1",
+                "CANDLESCOPE_SERVER_QUERY_WAL_S3_BUCKET": S3_BUCKET,
+                "CANDLESCOPE_SERVER_QUERY_WAL_S3_PREFIX": prefix,
+                "CANDLESCOPE_SERVER_QUERY_WAL_S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
+                "CANDLESCOPE_SERVER_QUERY_WAL_S3_SECRET_ACCESS_KEY": (
+                    S3_SECRET_ACCESS_KEY
+                ),
+                "CANDLESCOPE_SERVER_QUERY_WAL_CLUSTER_ID": CLUSTER_ID,
+            }
+            for name, value in settings.items():
+                monkeypatch.setenv(name, value)
+            result = await server_query_backup_select.run(
+                receipt_paths=(path,),
+                expected_cluster_id=CLUSTER_ID,
+                expected_system_identifier=request.system_identifier,
+                expected_timeline=request.timeline,
+                now_ms=completed_at_ms,
+            )
+    assert result["status"] == "selected-and-fully-verified"
+    assert result["selected_backup_fully_verified"] is True
+    assert result["selected"]["backup_id"] == request.backup_id
+    assert result["global_latest_proven"] is False
 
 
 def _migrator() -> PostgresQueryControlMigrator:

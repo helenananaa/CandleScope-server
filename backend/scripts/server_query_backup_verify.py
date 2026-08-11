@@ -33,30 +33,11 @@ async def run(
     manifest_uri: str,
     audit_anchor_uri: str,
 ) -> dict[str, Any]:
-    store = _store()
-    backup = await ImmutablePhysicalBackupCatalog(
-        object_store=store,
-        wal_archive=_wal_archive(),
-        signer=PhysicalBackupManifestSigner(
-            key_id=_required_env("BACKUP_HMAC_KEY_ID"),
-            secret=_secret("BACKUP_HMAC_SECRET_BASE64"),
-        ),
-        max_artifact_bytes=_positive_env(
-            "MAX_ARTIFACT_BYTES",
-            512 * 1024 * 1024,
-        ),
-        max_total_bytes=_positive_env("MAX_TOTAL_BYTES", 1024 * 1024 * 1024),
-    ).verify(
+    backup = await backup_catalog().verify(
         manifest_uri,
         expected_audit_anchor_uri=audit_anchor_uri,
     )
-    anchor = await ImmutableQueryAuditAnchorRepository(
-        object_store=_anchor_store(),
-        signer=QueryAuditAnchorSigner(
-            key_id=_required_anchor_env("HMAC_KEY_ID"),
-            secret=_anchor_secret(),
-        ),
-    ).verify(audit_anchor_uri)
+    anchor = await anchor_repository().verify(audit_anchor_uri)
     _require_anchor_match(backup, anchor)
     request = backup.manifest.request
     return {
@@ -80,6 +61,32 @@ async def run(
         "end_lsn": request.end_lsn,
         "artifacts": [artifact.to_wire() for artifact in backup.manifest.artifacts],
     }
+
+
+def backup_catalog() -> ImmutablePhysicalBackupCatalog:
+    return ImmutablePhysicalBackupCatalog(
+        object_store=_store(),
+        wal_archive=_wal_archive(),
+        signer=PhysicalBackupManifestSigner(
+            key_id=_required_env("BACKUP_HMAC_KEY_ID"),
+            secret=_secret("BACKUP_HMAC_SECRET_BASE64"),
+        ),
+        max_artifact_bytes=_positive_env(
+            "MAX_ARTIFACT_BYTES",
+            512 * 1024 * 1024,
+        ),
+        max_total_bytes=_positive_env("MAX_TOTAL_BYTES", 1024 * 1024 * 1024),
+    )
+
+
+def anchor_repository() -> ImmutableQueryAuditAnchorRepository:
+    return ImmutableQueryAuditAnchorRepository(
+        object_store=_anchor_store(),
+        signer=QueryAuditAnchorSigner(
+            key_id=_required_anchor_env("HMAC_KEY_ID"),
+            secret=_anchor_secret(),
+        ),
+    )
 
 
 def main() -> None:

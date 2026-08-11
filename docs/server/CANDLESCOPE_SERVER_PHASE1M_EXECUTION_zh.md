@@ -2,6 +2,8 @@
 
 状态：QUERY_BACKUP_SCHEDULE_CONTRACT_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1N 已加入从明确提供的 Phase 1M 成功回执中选择唯一、新鲜恢复候选，并对选中项执行完整 manifest/artifact/WAL/anchor 复验的门禁。本文件第 5 节关于“没有备份选择索引”的描述仍成立：Phase 1N 不提供对象列举或全局 latest，只提供有界输入集合内的选择。当前恢复选择边界以 `CANDLESCOPE_SERVER_PHASE1N_EXECUTION_zh.md` 为准。
+
 Phase 1M 延续独立快照查询进程；主 FastAPI `server` Profile 仍保持 fail closed。它把 Phase 1L 已验证但依赖人工拼接的物理备份步骤收敛为一个可由 systemd、CronJob 或其他外部调度器调用的一次性 job：
 
 ```text

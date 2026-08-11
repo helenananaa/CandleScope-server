@@ -7,6 +7,7 @@ import uuid
 from dataclasses import replace
 
 import pytest
+
 from app.server_runtime.object_store import StoredObject
 from app.server_runtime.query_backup_catalog import (
     ImmutablePhysicalBackupCatalog,
@@ -197,6 +198,31 @@ def test_backup_catalog_rejects_tamper_anchor_drift_and_artifact_bounds() -> Non
         bounded = _catalog(store, max_artifact_bytes=4)
         with pytest.raises(PhysicalBackupError, match="exceed bounds"):
             await bounded.publish(_request(), _artifacts())
+
+    asyncio.run(run())
+
+
+def test_backup_catalog_inspects_only_canonical_signed_manifest_metadata() -> None:
+    async def run() -> None:
+        store = InMemoryImmutableObjectStore()
+        await store.ensure_bucket()
+        await _seed_coverage(store)
+        catalog = _catalog(store)
+        published = await catalog.publish(_request(), _artifacts())
+
+        for key in tuple(store.objects):
+            if not key.endswith("manifest.json"):
+                del store.objects[key]
+        inspected = await catalog.inspect_signed_manifest(published.manifest_uri)
+        assert inspected.manifest == published.manifest
+        assert inspected.manifest_sha256 == published.manifest_sha256
+
+        manifest_key = next(iter(store.objects))
+        store.objects["backups/v3/alias/manifest.json"] = store.objects[manifest_key]
+        with pytest.raises(PhysicalBackupError, match="manifest URI has drifted"):
+            await catalog.inspect_signed_manifest(
+                "s3://candlescope-test/backups/v3/alias/manifest.json"
+            )
 
     asyncio.run(run())
 

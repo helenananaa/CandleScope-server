@@ -1,0 +1,133 @@
+{
+  "schema_version": "candlescope.server-phase1n-backup-selection-verification.v1",
+  "captured_at_utc": "2026-08-11T15:23:08Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "5b4411731836a378fc5d1b892e1dd26f93cbbcb7",
+  "phase": "phase1n-bounded-recovery-selection",
+  "phase1n_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false,
+    "automatic_restore_or_promotion": false,
+    "global_latest_claimed": false
+  },
+  "signed_manifest_inspection": {
+    "method": "ImmutablePhysicalBackupCatalog.inspect_signed_manifest",
+    "rfc8785_canonical_manifest_required": true,
+    "manifest_hmac_verified": true,
+    "canonical_manifest_uri_required": true,
+    "expected_anchor_uri_checked": true,
+    "artifacts_read_during_inspection": false,
+    "wal_read_during_inspection": false,
+    "full_verify_reuses_inspection_then_checks_artifacts_and_wal": true
+  },
+  "candidate_input": {
+    "receipt_schema": "candlescope.query-backup-job-receipt.v1",
+    "receipt_itself_is_signed": false,
+    "receipt_material_fields_reconciled_to_signed_manifest": true,
+    "explicit_receipt_files_required": true,
+    "owned_private_regular_file_required": true,
+    "o_nofollow_used_when_available": true,
+    "default_maximum_receipt_bytes": 65536,
+    "default_maximum_candidates": 32,
+    "duplicate_backup_or_manifest_rejected": true
+  },
+  "selection_policy": {
+    "schema_version": "candlescope.query-backup-recovery-selection.v1",
+    "expected_cluster_id_required": true,
+    "expected_postgresql_system_identifier_required": true,
+    "expected_timeline_required": true,
+    "unique_latest_target_required": true,
+    "default_maximum_age_ms": 108000000,
+    "default_maximum_future_skew_ms": 300000,
+    "equal_latest_targets_rejected": true,
+    "input_order_independent_scope_hash": true,
+    "latest_within_supplied_receipts": true,
+    "global_latest_proven": false
+  },
+  "selected_candidate_verification": {
+    "physical_artifacts_fully_verified": true,
+    "postgresql_backup_manifest_verified": true,
+    "signed_contiguous_wal_fully_verified": true,
+    "audit_anchor_fully_verified": true,
+    "full_result_reconciled_to_selection": true,
+    "automatic_fallback_to_older_candidate": false,
+    "restore_started": false,
+    "database_promoted": false
+  },
+  "real_postgresql_18_minio_gate": {
+    "fresh_compose_volume": true,
+    "exclusive_write_fence": true,
+    "physical_backup_published": true,
+    "continuous_wal_coverage_published": true,
+    "phase1m_canonical_receipt_file": true,
+    "real_s3_manifest_metadata_selected": true,
+    "selected_artifacts_wal_and_anchor_redownloaded": true,
+    "target_time_pitr_after_selection": true,
+    "post_target_event_absent": true,
+    "post_promotion_append_passed": true,
+    "real_candidate_count": 1,
+    "multi_candidate_ordering_proof": "unit fixtures"
+  },
+  "gates": [
+    {
+      "name": "Phase 1N exact receipt, identity, freshness, selection, and full-verification unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1n_backup_selection.py",
+      "result": "6 passed"
+    },
+    {
+      "name": "Phase 1J catalog and Phase 1N selection focused unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1n_backup_selection.py",
+      "result": "25 passed"
+    },
+    {
+      "name": "Phase 1A through 1N unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py backend/tests/test_server_phase1l_wal_coverage.py backend/tests/test_server_phase1m_scheduled_backup.py backend/tests/test_server_phase1n_backup_selection.py",
+      "result": "112 passed"
+    },
+    {
+      "name": "Real PostgreSQL 18 and MinIO fenced backup, Phase 1N selection, full verification, and PITR gate",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 9.43s"
+    },
+    {
+      "name": "Phase 1K real multi-instance write drain and fence regression",
+      "command": "CANDLESCOPE_PHASE1K_INTEGRATION=1 CANDLESCOPE_PHASE1K_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1k_backup_window.py",
+      "result": "1 passed in 1.50s"
+    },
+    {
+      "name": "Phase 1M real PostgreSQL 18 pg_basebackup orchestration regression",
+      "command": "CANDLESCOPE_PHASE1M_INTEGRATION=1 CANDLESCOPE_PHASE1M_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1m_scheduled_backup.py",
+      "result": "1 passed in 1.40s"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1N static, dependency, Compose, systemd, JSON, CLI, and patch hygiene",
+      "result": "ruff check and format passed for 7 touched Python files; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; systemd-analyze verify passed with two unrelated host-unit warnings; seven operator CLI help paths passed; Phase 1J through 1N evidence JSON strict parse passed; git diff check passed; no Phase 1 containers remained"
+    }
+  ],
+  "claims_not_made": [
+    "Phase 1M receipts are automatically persisted, signed, or collected",
+    "the supplied receipt set is complete or proves a global latest backup",
+    "S3 listing or a complete immutable backup index exists",
+    "successful backup cadence, missed-run SLO, or 24 or 72 hour continuity is proven",
+    "an external alert route or on-call delivery is configured",
+    "a damaged newest candidate automatically falls back to an older backup",
+    "restore approval, dual control, automatic restore, or scheduled restore drills are implemented",
+    "retention, pruning, or deletion of manifests, artifacts, WAL, or anchors is implemented",
+    "production RPO, RTO, off-site replication, HA, or automatic failover is configured",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

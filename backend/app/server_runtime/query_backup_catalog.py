@@ -9,7 +9,7 @@ import re
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 import rfc8785
@@ -446,15 +446,12 @@ class ImmutablePhysicalBackupCatalog:
         *,
         expected_audit_anchor_uri: str | None = None,
     ) -> PublishedPhysicalBackup:
-        stored_manifest = await self._object_store.get_uri(manifest_uri)
-        manifest = _manifest_from_bytes(stored_manifest.data)
-        self._signer.verify(manifest)
+        inspected = await self.inspect_signed_manifest(
+            manifest_uri,
+            expected_audit_anchor_uri=expected_audit_anchor_uri,
+        )
+        manifest = inspected.manifest
         request = manifest.request
-        if (
-            expected_audit_anchor_uri is not None
-            and request.audit_anchor_uri != expected_audit_anchor_uri
-        ):
-            raise PhysicalBackupError("backup references an unexpected audit anchor")
         total = 0
         artifact_data: dict[str, bytes] = {}
         for artifact in manifest.artifacts:
@@ -477,6 +474,27 @@ class ImmutablePhysicalBackupCatalog:
             artifact_data[artifact.name] = data
         _require_postgres_metadata(request, artifact_data["backup_manifest"])
         await self._require_wal_coverage(request)
+        return inspected
+
+    async def inspect_signed_manifest(
+        self,
+        manifest_uri: str,
+        *,
+        expected_audit_anchor_uri: str | None = None,
+    ) -> PublishedPhysicalBackup:
+        """Authenticate bounded manifest metadata without reading artifacts or WAL."""
+
+        stored_manifest = await self._object_store.get_uri(manifest_uri)
+        manifest = _manifest_from_bytes(stored_manifest.data)
+        self._signer.verify(manifest)
+        request = manifest.request
+        if manifest_uri != self._object_store.uri_for(_manifest_key(request)):
+            raise PhysicalBackupError("backup manifest URI has drifted")
+        if (
+            expected_audit_anchor_uri is not None
+            and request.audit_anchor_uri != expected_audit_anchor_uri
+        ):
+            raise PhysicalBackupError("backup references an unexpected audit anchor")
         return PublishedPhysicalBackup(
             manifest_uri=manifest_uri,
             manifest_sha256=hashlib.sha256(stored_manifest.data).hexdigest(),
@@ -777,7 +795,9 @@ def _utc_timestamp(value: object) -> str:
     if not isinstance(value, str):
         raise TypeError("recovery_target_time must be a string")
     try:
-        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f+00")
+        parsed = datetime.strptime(value, "%Y-%m-%d %H:%M:%S.%f+00").replace(
+            tzinfo=timezone.utc
+        )
     except ValueError as exc:
         raise ValueError(
             "recovery_target_time must be PostgreSQL UTC time with microseconds"

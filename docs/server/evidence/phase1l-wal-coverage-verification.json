@@ -1,0 +1,123 @@
+{
+  "schema_version": "candlescope.server-phase1l-wal-coverage-verification.v1",
+  "captured_at_utc": "2026-08-11T14:26:37Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "7385d8ce077bddee39e642c868bedaa698d3326b",
+  "phase": "phase1l-contiguous-wal-coverage",
+  "phase1l_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false
+  },
+  "recovery_target": {
+    "captured_by_publisher_from_auditor_dsn": true,
+    "single_postgresql_statement": true,
+    "fields": [
+      "canonical UTC microsecond target time",
+      "target LSN",
+      "PostgreSQL WAL filename",
+      "WAL segment size"
+    ],
+    "operator_supplied_target_removed": true,
+    "postgresql_segment_boundary_semantics_matched": true,
+    "real_auditor_role_capture_passed": true
+  },
+  "wal_coverage": {
+    "range_start": "PostgreSQL backup_manifest end_lsn segment",
+    "range_end": "captured recovery target LSN segment",
+    "same_timeline_required": true,
+    "ordered_contiguous_filename_enumeration": true,
+    "default_max_segments": 4096,
+    "default_wait_timeout_ms": 120000,
+    "default_poll_interval_ms": 250,
+    "only_missing_objects_are_retried": true,
+    "metadata_hash_and_exact_size_verified": true,
+    "wal_store_credentials_are_independent": true,
+    "catalog_publish_rechecks_all_segments": true,
+    "independent_verifier_rechecks_all_segments": true
+  },
+  "physical_backup_catalog": {
+    "schema_version": "candlescope.query-physical-backup.v3",
+    "object_path_version": "backups/v3",
+    "recovery_target_lsn_signed": true,
+    "wal_segment_size_signed": true,
+    "ordered_wal_receipts_signed": true,
+    "wal_receipt_fields": ["filename", "uri", "sha256", "size_bytes"],
+    "phase1k_fence_fields_retained": true,
+    "phase1j_and_phase1i_integrity_fields_retained": true,
+    "v1_and_v2_fail_closed": true
+  },
+  "real_postgresql_18_minio_gate": {
+    "fresh_volume_base_backup": true,
+    "pg_verifybackup_passed": true,
+    "write_fence_held": true,
+    "fenced_write_rejected": true,
+    "wal_archive_failed_count": 0,
+    "wal_segment_size_bytes": 16777216,
+    "continuous_wal_objects_uploaded_and_restored": true,
+    "manifest_v3_published_and_verified": true,
+    "inclusive_target_time_pitr_passed": true,
+    "post_target_event_absent": true,
+    "post_promotion_append_passed": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1L WAL math, target tuple, polling, and failure unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1l_wal_coverage.py",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1J through 1L backup catalog, window, and WAL unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py backend/tests/test_server_phase1l_wal_coverage.py",
+      "result": "30 passed"
+    },
+    {
+      "name": "Phase 1A through 1L unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py backend/tests/test_server_phase1l_wal_coverage.py",
+      "result": "96 passed"
+    },
+    {
+      "name": "Phase 1L real fenced PostgreSQL 18 physical backup, continuous WAL proof, MinIO, and PITR gate",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 11.31s"
+    },
+    {
+      "name": "Phase 1K real multi-instance write drain and fence regression",
+      "command": "CANDLESCOPE_PHASE1K_INTEGRATION=1 CANDLESCOPE_PHASE1K_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1k_backup_window.py",
+      "result": "1 passed in 1.54s"
+    },
+    {
+      "name": "Phase 1I real migration, privilege, anchor, backup, and restore regression",
+      "command": "CANDLESCOPE_PHASE1I_INTEGRATION=1 CANDLESCOPE_PHASE1I_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1i_query_operations.py",
+      "result": "1 passed in 1.08s"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1L static, dependency, Compose, JSON, CLI, and patch hygiene",
+      "result": "ruff check and format passed for 9 files; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; four operator CLI help paths passed; Phase 1J through 1L evidence JSON strict parse passed; git diff check passed; no Phase 1 containers remained"
+    }
+  ],
+  "claims_not_made": [
+    "a timer, CronJob, resident scheduler, alert route, or automatic retry policy is deployed",
+    "pg_basebackup, staging cleanup, orphan cleanup, retention, backup selection, or restore approval is automated",
+    "cross-timeline WAL coverage is supported",
+    "24 or 72 hour WAL continuity, long object-store outage recovery, disk exhaustion, network partition, concurrent backup, or large-manifest capacity has passed",
+    "production RPO, RTO, off-site replication, PostgreSQL HA, streaming replication, or automatic failover is configured",
+    "S3 conditional create is Object Lock or WORM",
+    "HMAC is public-key non-repudiation, KMS or HSM custody, or dual control",
+    "the in-memory artifact publisher is suitable for an unmeasured large database",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

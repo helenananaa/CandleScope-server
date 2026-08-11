@@ -2,6 +2,8 @@
 
 状态：QUERY_CONTROL_WRITE_FENCE_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1L 已把当前清单升级为 v3 并加入连续 WAL 覆盖证明；本文件保留 Phase 1K 的历史合同与 v2 证据。
+
 Phase 1K 延续独立快照查询进程，主 FastAPI `server` Profile 仍保持 fail closed。它消除 Phase 1J 依赖操作员口头保证“当前无写入”的缺口，让所有 query-control 写事务与物理备份窗口共享同一个 PostgreSQL 锁协议：
 
 ```text

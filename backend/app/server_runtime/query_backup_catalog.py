@@ -14,9 +14,19 @@ from urllib.parse import urlsplit
 
 import rfc8785
 
-from app.server_runtime.object_store import ImmutableObjectStore
+from app.server_runtime.object_store import ImmutableObjectStore, ObjectStoreError
+from app.server_runtime.query_wal_archive import (
+    ImmutablePostgresWalArchive,
+    WalArchiveError,
+)
+from app.server_runtime.query_wal_coverage import (
+    DEFAULT_MAX_WAL_COVERAGE_SEGMENTS,
+    WalCoverageError,
+    read_wal_coverage,
+    wal_segment_filenames,
+)
 
-PHYSICAL_BACKUP_SCHEMA_VERSION = "candlescope.query-physical-backup.v2"
+PHYSICAL_BACKUP_SCHEMA_VERSION = "candlescope.query-physical-backup.v3"
 PHYSICAL_BACKUP_ALGORITHM = "hmac-sha256"
 REQUIRED_BACKUP_ARTIFACTS = (
     "backup_manifest",
@@ -70,6 +80,41 @@ class PhysicalBackupArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class PhysicalBackupWalSegment:
+    filename: str
+    uri: str
+    sha256: str
+    size_bytes: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.filename, str)
+            or len(self.filename) != 24
+            or any(character not in "0123456789ABCDEF" for character in self.filename)
+        ):
+            raise ValueError("WAL coverage filename must be an upper-case WAL segment")
+        object.__setattr__(self, "uri", _s3_uri(self.uri, field="WAL segment uri"))
+        object.__setattr__(
+            self,
+            "sha256",
+            _sha256(self.sha256, field="WAL segment sha256"),
+        )
+        object.__setattr__(
+            self,
+            "size_bytes",
+            _positive_int(self.size_bytes, field="WAL segment size_bytes"),
+        )
+
+    def to_wire(self) -> dict[str, str]:
+        return {
+            "filename": self.filename,
+            "uri": self.uri,
+            "sha256": self.sha256,
+            "size_bytes": str(self.size_bytes),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PhysicalBackupRequest:
     backup_id: str
     cluster_id: str
@@ -77,12 +122,15 @@ class PhysicalBackupRequest:
     write_fence_id: str
     write_fence_acquired_at_ms: int
     recovery_target_time: str
+    recovery_target_lsn: str
     postgres_version: str
     system_identifier: int
     timeline: int
     start_lsn: str
     end_lsn: str
+    wal_segment_size_bytes: int
     wal_archive_prefix_uri: str
+    wal_coverage: tuple[PhysicalBackupWalSegment, ...]
     audit_anchor_uri: str
     audit_anchor_sha256: str
     audit_head_sequence: int
@@ -107,6 +155,7 @@ class PhysicalBackupRequest:
             "write_fence_acquired_at_ms",
             "system_identifier",
             "timeline",
+            "wal_segment_size_bytes",
             "migration_version",
         ):
             object.__setattr__(
@@ -132,6 +181,11 @@ class PhysicalBackupRequest:
             "recovery_target_time",
             _utc_timestamp(self.recovery_target_time),
         )
+        object.__setattr__(
+            self,
+            "recovery_target_lsn",
+            _lsn(self.recovery_target_lsn, field="recovery_target_lsn"),
+        )
         object.__setattr__(self, "start_lsn", _lsn(self.start_lsn, field="start_lsn"))
         object.__setattr__(self, "end_lsn", _lsn(self.end_lsn, field="end_lsn"))
         object.__setattr__(
@@ -139,6 +193,24 @@ class PhysicalBackupRequest:
             "wal_archive_prefix_uri",
             _s3_uri(self.wal_archive_prefix_uri, field="wal_archive_prefix_uri"),
         )
+        if not isinstance(self.wal_coverage, tuple) or any(
+            not isinstance(item, PhysicalBackupWalSegment) for item in self.wal_coverage
+        ):
+            raise TypeError("wal_coverage must be a tuple of WAL segment receipts")
+        expected_filenames = wal_segment_filenames(
+            timeline=self.timeline,
+            start_lsn=self.end_lsn,
+            end_lsn=self.recovery_target_lsn,
+            segment_size_bytes=self.wal_segment_size_bytes,
+            max_segments=DEFAULT_MAX_WAL_COVERAGE_SEGMENTS,
+        )
+        if tuple(item.filename for item in self.wal_coverage) != expected_filenames:
+            raise ValueError("WAL coverage is not the exact contiguous LSN interval")
+        for item in self.wal_coverage:
+            if item.uri != f"{self.wal_archive_prefix_uri}{item.filename}":
+                raise ValueError("WAL coverage URI differs from the archive prefix")
+            if item.size_bytes != self.wal_segment_size_bytes:
+                raise ValueError("WAL coverage segment size has drifted")
         object.__setattr__(
             self,
             "audit_anchor_uri",
@@ -203,12 +275,15 @@ class PhysicalBackupManifest:
                 "write_fence_id": request.write_fence_id,
                 "write_fence_acquired_at_ms": str(request.write_fence_acquired_at_ms),
                 "recovery_target_time": request.recovery_target_time,
+                "recovery_target_lsn": request.recovery_target_lsn,
                 "postgres_version": request.postgres_version,
                 "system_identifier": str(request.system_identifier),
                 "timeline": str(request.timeline),
                 "start_lsn": request.start_lsn,
                 "end_lsn": request.end_lsn,
+                "wal_segment_size_bytes": str(request.wal_segment_size_bytes),
                 "wal_archive_prefix_uri": request.wal_archive_prefix_uri,
+                "wal_coverage": [item.to_wire() for item in request.wal_coverage],
                 "audit_anchor_uri": request.audit_anchor_uri,
                 "audit_anchor_sha256": request.audit_anchor_sha256,
                 "audit_head_sequence": str(request.audit_head_sequence),
@@ -284,15 +359,19 @@ class ImmutablePhysicalBackupCatalog:
         self,
         *,
         object_store: ImmutableObjectStore,
+        wal_archive: ImmutablePostgresWalArchive,
         signer: PhysicalBackupManifestSigner,
         max_artifact_bytes: int = DEFAULT_MAX_BACKUP_ARTIFACT_BYTES,
         max_total_bytes: int = DEFAULT_MAX_BACKUP_TOTAL_BYTES,
     ) -> None:
         if not isinstance(object_store, ImmutableObjectStore):
             raise TypeError("object_store must implement ImmutableObjectStore")
+        if not isinstance(wal_archive, ImmutablePostgresWalArchive):
+            raise TypeError("wal_archive must be an ImmutablePostgresWalArchive")
         if not isinstance(signer, PhysicalBackupManifestSigner):
             raise TypeError("signer must be a PhysicalBackupManifestSigner")
         self._object_store = object_store
+        self._wal_archive = wal_archive
         self._signer = signer
         self._max_artifact_bytes = _positive_int(
             max_artifact_bytes,
@@ -310,6 +389,7 @@ class ImmutablePhysicalBackupCatalog:
     ) -> PublishedPhysicalBackup:
         artifacts = self._describe_artifacts(request, artifact_data)
         _require_postgres_metadata(request, artifact_data["backup_manifest"])
+        await self._require_wal_coverage(request)
         manifest = self._signer.sign(request, artifacts)
         await self._object_store.check_bucket()
         created_artifacts = 0
@@ -396,6 +476,7 @@ class ImmutablePhysicalBackupCatalog:
                 raise PhysicalBackupError("backup artifact integrity check failed")
             artifact_data[artifact.name] = data
         _require_postgres_metadata(request, artifact_data["backup_manifest"])
+        await self._require_wal_coverage(request)
         return PublishedPhysicalBackup(
             manifest_uri=manifest_uri,
             manifest_sha256=hashlib.sha256(stored_manifest.data).hexdigest(),
@@ -431,6 +512,25 @@ class ImmutablePhysicalBackupCatalog:
                 )
             )
         return tuple(result)
+
+    async def _require_wal_coverage(self, request: PhysicalBackupRequest) -> None:
+        try:
+            receipts = await read_wal_coverage(
+                self._wal_archive,
+                tuple(item.filename for item in request.wal_coverage),
+                segment_size_bytes=request.wal_segment_size_bytes,
+            )
+        except (ObjectStoreError, WalArchiveError, WalCoverageError) as exc:
+            raise PhysicalBackupError("signed WAL coverage is unavailable") from exc
+        observed = tuple(
+            (item.filename, item.uri, item.sha256, item.size_bytes) for item in receipts
+        )
+        expected = tuple(
+            (item.filename, item.uri, item.sha256, item.size_bytes)
+            for item in request.wal_coverage
+        )
+        if observed != expected:
+            raise PhysicalBackupError("WAL coverage differs from the signed receipts")
 
 
 def parse_postgres_backup_manifest(data: bytes) -> PostgresBackupMetadata:
@@ -534,12 +634,15 @@ def _manifest_from_bytes(data: bytes) -> PhysicalBackupManifest:
         "write_fence_id",
         "write_fence_acquired_at_ms",
         "recovery_target_time",
+        "recovery_target_lsn",
         "postgres_version",
         "system_identifier",
         "timeline",
         "start_lsn",
         "end_lsn",
+        "wal_segment_size_bytes",
         "wal_archive_prefix_uri",
+        "wal_coverage",
         "audit_anchor_uri",
         "audit_anchor_sha256",
         "audit_head_sequence",
@@ -562,6 +665,7 @@ def _manifest_from_bytes(data: bytes) -> PhysicalBackupManifest:
                 field="write_fence_acquired_at_ms",
             ),
             recovery_target_time=backup["recovery_target_time"],
+            recovery_target_lsn=backup["recovery_target_lsn"],
             postgres_version=backup["postgres_version"],
             system_identifier=_decimal(
                 backup["system_identifier"],
@@ -570,7 +674,14 @@ def _manifest_from_bytes(data: bytes) -> PhysicalBackupManifest:
             timeline=_decimal(backup["timeline"], field="timeline"),
             start_lsn=backup["start_lsn"],
             end_lsn=backup["end_lsn"],
+            wal_segment_size_bytes=_decimal(
+                backup["wal_segment_size_bytes"],
+                field="wal_segment_size_bytes",
+            ),
             wal_archive_prefix_uri=backup["wal_archive_prefix_uri"],
+            wal_coverage=tuple(
+                _wal_segment_from_wire(item) for item in backup["wal_coverage"]
+            ),
             audit_anchor_uri=backup["audit_anchor_uri"],
             audit_anchor_sha256=backup["audit_anchor_sha256"],
             audit_head_sequence=_decimal(
@@ -618,12 +729,28 @@ def _artifact_from_wire(value: object) -> PhysicalBackupArtifact:
     )
 
 
+def _wal_segment_from_wire(value: object) -> PhysicalBackupWalSegment:
+    if not isinstance(value, dict) or set(value) != {
+        "filename",
+        "uri",
+        "sha256",
+        "size_bytes",
+    }:
+        raise ValueError("WAL coverage segment shape is invalid")
+    return PhysicalBackupWalSegment(
+        filename=value["filename"],
+        uri=value["uri"],
+        sha256=value["sha256"],
+        size_bytes=_decimal(value["size_bytes"], field="WAL segment size_bytes"),
+    )
+
+
 def _artifact_key(request: PhysicalBackupRequest, name: str) -> str:
-    return f"backups/v2/{request.cluster_id}/{request.backup_id}/artifacts/{name}"
+    return f"backups/v3/{request.cluster_id}/{request.backup_id}/artifacts/{name}"
 
 
 def _manifest_key(request: PhysicalBackupRequest) -> str:
-    return f"backups/v2/{request.cluster_id}/{request.backup_id}/manifest.json"
+    return f"backups/v3/{request.cluster_id}/{request.backup_id}/manifest.json"
 
 
 def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

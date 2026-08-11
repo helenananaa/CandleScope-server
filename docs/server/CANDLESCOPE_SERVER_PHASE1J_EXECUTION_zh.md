@@ -2,7 +2,7 @@
 
 状态：QUERY_CONTROL_WAL_PITR_DRILL_COMPLETE_NOT_DEPLOYABLE
 
-后续状态：Phase 1K 已用 PostgreSQL advisory lock 补上多实例 query-control 写入 fence，并把 fence receipt 纳入物理备份 manifest v2。本文中的 manifest v1 与人工静止窗口代表 Phase 1J 当时边界；当前操作方式以 `CANDLESCOPE_SERVER_PHASE1K_EXECUTION_zh.md` 为准。
+后续状态：Phase 1K 已用 PostgreSQL advisory lock 补上多实例 query-control 写入 fence，Phase 1L 又加入 manifest v3 连续 WAL 覆盖证明。本文中的 manifest v1 与人工静止窗口代表 Phase 1J 当时边界；当前操作方式以 `CANDLESCOPE_SERVER_PHASE1L_EXECUTION_zh.md` 为准。
 
 Phase 1J 延续独立快照查询进程，主 FastAPI `server` Profile 仍保持 fail closed。它把 Phase 1I 的逻辑 dump 恢复证明推进为一个有签名恢复目标的 PostgreSQL 18 物理备份集：
 

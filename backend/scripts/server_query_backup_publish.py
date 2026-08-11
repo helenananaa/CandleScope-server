@@ -21,7 +21,14 @@ from app.server_runtime.query_backup_catalog import (
     ImmutablePhysicalBackupCatalog,
     PhysicalBackupManifestSigner,
     PhysicalBackupRequest,
+    PhysicalBackupWalSegment,
     parse_postgres_backup_manifest,
+)
+from app.server_runtime.query_wal_archive import ImmutablePostgresWalArchive
+from app.server_runtime.query_wal_coverage import (
+    capture_postgres_recovery_target,
+    wait_for_wal_coverage,
+    wal_segment_filenames,
 )
 from app.server_runtime.storage.postgres_query_control import (
     PostgresQueryAuditVerifier,
@@ -31,6 +38,7 @@ from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_"
 ANCHOR_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_"
 WINDOW_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_WINDOW_"
+WAL_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_WAL_"
 
 
 async def run(
@@ -38,7 +46,6 @@ async def run(
     backup_directory: Path,
     backup_id: str,
     created_at_ms: int,
-    recovery_target_time: str,
     audit_anchor_uri: str,
 ) -> dict[str, Any]:
     directory = backup_directory.resolve(strict=True)
@@ -57,6 +64,40 @@ async def run(
     await _verify_postgres_backup(artifacts)
     metadata = parse_postgres_backup_manifest(artifacts["backup_manifest"])
     store = _store()
+    wal_archive = _wal_archive()
+    target = await capture_postgres_recovery_target(
+        _required_env("POSTGRES_AUDITOR_DSN"),
+        connect_timeout_ms=_positive_env("CONNECT_TIMEOUT_MS", 5_000),
+        request_timeout_ms=_positive_env("REQUEST_TIMEOUT_MS", 30_000),
+    )
+    filenames = wal_segment_filenames(
+        timeline=metadata.timeline,
+        start_lsn=metadata.end_lsn,
+        end_lsn=target.recovery_target_lsn,
+        segment_size_bytes=target.wal_segment_size_bytes,
+        max_segments=_positive_env("MAX_WAL_COVERAGE_SEGMENTS", 4_096),
+    )
+    if filenames[-1] != target.recovery_target_wal_filename:
+        raise RuntimeError("recovery target WAL filename differs from its LSN")
+    archived = await wait_for_wal_coverage(
+        wal_archive,
+        filenames,
+        segment_size_bytes=target.wal_segment_size_bytes,
+        timeout_ms=_positive_env("WAL_COVERAGE_TIMEOUT_MS", 120_000),
+        poll_interval_ms=_positive_env("WAL_COVERAGE_POLL_INTERVAL_MS", 250),
+    )
+    wal_prefix_uri = _required_env("WAL_ARCHIVE_PREFIX_URI")
+    wal_coverage = tuple(
+        PhysicalBackupWalSegment(
+            filename=item.filename,
+            uri=item.uri,
+            sha256=item.sha256,
+            size_bytes=item.size_bytes,
+        )
+        for item in archived
+    )
+    if any(item.uri != f"{wal_prefix_uri}{item.filename}" for item in wal_coverage):
+        raise RuntimeError("configured WAL archive prefix differs from the WAL store")
     anchors = ImmutableQueryAuditAnchorRepository(
         object_store=_anchor_store(),
         signer=QueryAuditAnchorSigner(
@@ -86,13 +127,16 @@ async def run(
         created_at_ms=created_at_ms,
         write_fence_id=_required_window_env("FENCE_ID"),
         write_fence_acquired_at_ms=_positive_window_env("FENCE_ACQUIRED_AT_MS"),
-        recovery_target_time=recovery_target_time,
+        recovery_target_time=target.recovery_target_time,
+        recovery_target_lsn=target.recovery_target_lsn,
         postgres_version=_required_env("POSTGRES_VERSION"),
         system_identifier=metadata.system_identifier,
         timeline=metadata.timeline,
         start_lsn=metadata.start_lsn,
         end_lsn=metadata.end_lsn,
-        wal_archive_prefix_uri=_required_env("WAL_ARCHIVE_PREFIX_URI"),
+        wal_segment_size_bytes=target.wal_segment_size_bytes,
+        wal_archive_prefix_uri=wal_prefix_uri,
+        wal_coverage=wal_coverage,
         audit_anchor_uri=anchor.uri,
         audit_anchor_sha256=anchor.content_sha256,
         audit_head_sequence=database.head_audit_sequence,
@@ -102,6 +146,7 @@ async def run(
     )
     catalog = ImmutablePhysicalBackupCatalog(
         object_store=store,
+        wal_archive=wal_archive,
         signer=PhysicalBackupManifestSigner(
             key_id=_required_env("BACKUP_HMAC_KEY_ID"),
             secret=_secret("BACKUP_HMAC_SECRET_BASE64"),
@@ -122,6 +167,12 @@ async def run(
             result.manifest.request.write_fence_acquired_at_ms
         ),
         "recovery_target_time": result.manifest.request.recovery_target_time,
+        "recovery_target_lsn": result.manifest.request.recovery_target_lsn,
+        "recovery_target_wal_filename": (
+            result.manifest.request.wal_coverage[-1].filename
+        ),
+        "wal_segment_size_bytes": result.manifest.request.wal_segment_size_bytes,
+        "wal_coverage_segment_count": len(result.manifest.request.wal_coverage),
         "audit_anchor_uri": result.manifest.request.audit_anchor_uri,
         "audit_head_sequence": result.manifest.request.audit_head_sequence,
         "system_identifier": str(result.manifest.request.system_identifier),
@@ -138,7 +189,6 @@ def main() -> None:
     parser.add_argument("--backup-directory", required=True, type=Path)
     parser.add_argument("--backup-id", required=True)
     parser.add_argument("--created-at-ms", required=True, type=int)
-    parser.add_argument("--recovery-target-time", required=True)
     parser.add_argument("--audit-anchor-uri", required=True)
     arguments = parser.parse_args()
     print(
@@ -148,7 +198,6 @@ def main() -> None:
                     backup_directory=arguments.backup_directory,
                     backup_id=arguments.backup_id,
                     created_at_ms=arguments.created_at_ms,
-                    recovery_target_time=arguments.recovery_target_time,
                     audit_anchor_uri=arguments.audit_anchor_uri,
                 )
             ),
@@ -231,6 +280,25 @@ def _anchor_store() -> S3ImmutableObjectStore:
         access_key_id=_required_anchor_env("S3_ACCESS_KEY_ID"),
         secret_access_key=_required_anchor_env("S3_SECRET_ACCESS_KEY"),
         request_timeout_ms=_positive_anchor_env("REQUEST_TIMEOUT_MS", 30_000),
+    )
+
+
+def _wal_archive() -> ImmutablePostgresWalArchive:
+    return ImmutablePostgresWalArchive(
+        object_store=S3ImmutableObjectStore(
+            endpoint_url=_required_wal_env("S3_ENDPOINT_URL"),
+            region=_optional_wal_env("S3_REGION", "us-east-1"),
+            bucket=_required_wal_env("S3_BUCKET"),
+            prefix=_required_wal_env("S3_PREFIX"),
+            access_key_id=_required_wal_env("S3_ACCESS_KEY_ID"),
+            secret_access_key=_required_wal_env("S3_SECRET_ACCESS_KEY"),
+            request_timeout_ms=_positive_wal_env("REQUEST_TIMEOUT_MS", 30_000),
+        ),
+        cluster_id=_required_env("CLUSTER_ID"),
+        max_object_bytes=_positive_wal_env(
+            "MAX_OBJECT_BYTES",
+            64 * 1024 * 1024,
+        ),
     )
 
 
@@ -326,6 +394,33 @@ def _optional_anchor_env(suffix: str, default: str) -> str:
 
 def _positive_anchor_env(suffix: str, default: int) -> int:
     name = f"{ANCHOR_ENV_PREFIX}{suffix}"
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"setting {name} must be an integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"setting {name} must be positive")
+    return value
+
+
+def _required_wal_env(suffix: str) -> str:
+    name = f"{WAL_ENV_PREFIX}{suffix}"
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"required setting {name} is missing")
+    return value.strip()
+
+
+def _optional_wal_env(suffix: str, default: str) -> str:
+    value = os.environ.get(f"{WAL_ENV_PREFIX}{suffix}", default).strip()
+    if not value:
+        raise RuntimeError(f"setting {WAL_ENV_PREFIX}{suffix} cannot be blank")
+    return value
+
+
+def _positive_wal_env(suffix: str, default: int) -> int:
+    name = f"{WAL_ENV_PREFIX}{suffix}"
     raw = os.environ.get(name, str(default)).strip()
     try:
         value = int(raw)

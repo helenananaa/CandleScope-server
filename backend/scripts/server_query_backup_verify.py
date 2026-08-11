@@ -20,10 +20,12 @@ from app.server_runtime.query_backup_catalog import (
     PhysicalBackupManifestSigner,
     PublishedPhysicalBackup,
 )
+from app.server_runtime.query_wal_archive import ImmutablePostgresWalArchive
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_"
 ANCHOR_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_"
+WAL_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_WAL_"
 
 
 async def run(
@@ -34,6 +36,7 @@ async def run(
     store = _store()
     backup = await ImmutablePhysicalBackupCatalog(
         object_store=store,
+        wal_archive=_wal_archive(),
         signer=PhysicalBackupManifestSigner(
             key_id=_required_env("BACKUP_HMAC_KEY_ID"),
             secret=_secret("BACKUP_HMAC_SECRET_BASE64"),
@@ -64,6 +67,10 @@ async def run(
         "write_fence_id": request.write_fence_id,
         "write_fence_acquired_at_ms": request.write_fence_acquired_at_ms,
         "recovery_target_time": request.recovery_target_time,
+        "recovery_target_lsn": request.recovery_target_lsn,
+        "recovery_target_wal_filename": request.wal_coverage[-1].filename,
+        "wal_segment_size_bytes": request.wal_segment_size_bytes,
+        "wal_coverage": [item.to_wire() for item in request.wal_coverage],
         "audit_anchor_uri": request.audit_anchor_uri,
         "audit_anchor_sha256": request.audit_anchor_sha256,
         "audit_head_sequence": request.audit_head_sequence,
@@ -143,6 +150,25 @@ def _anchor_store() -> S3ImmutableObjectStore:
     )
 
 
+def _wal_archive() -> ImmutablePostgresWalArchive:
+    return ImmutablePostgresWalArchive(
+        object_store=S3ImmutableObjectStore(
+            endpoint_url=_required_wal_env("S3_ENDPOINT_URL"),
+            region=_optional_wal_env("S3_REGION", "us-east-1"),
+            bucket=_required_wal_env("S3_BUCKET"),
+            prefix=_required_wal_env("S3_PREFIX"),
+            access_key_id=_required_wal_env("S3_ACCESS_KEY_ID"),
+            secret_access_key=_required_wal_env("S3_SECRET_ACCESS_KEY"),
+            request_timeout_ms=_positive_wal_env("REQUEST_TIMEOUT_MS", 30_000),
+        ),
+        cluster_id=_required_env("CLUSTER_ID"),
+        max_object_bytes=_positive_wal_env(
+            "MAX_OBJECT_BYTES",
+            64 * 1024 * 1024,
+        ),
+    )
+
+
 def _secret(suffix: str) -> bytes:
     try:
         secret = base64.b64decode(_required_env(suffix), validate=True)
@@ -215,6 +241,33 @@ def _optional_anchor_env(suffix: str, default: str) -> str:
 
 def _positive_anchor_env(suffix: str, default: int) -> int:
     name = f"{ANCHOR_ENV_PREFIX}{suffix}"
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"setting {name} must be an integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"setting {name} must be positive")
+    return value
+
+
+def _required_wal_env(suffix: str) -> str:
+    name = f"{WAL_ENV_PREFIX}{suffix}"
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"required setting {name} is missing")
+    return value.strip()
+
+
+def _optional_wal_env(suffix: str, default: str) -> str:
+    value = os.environ.get(f"{WAL_ENV_PREFIX}{suffix}", default).strip()
+    if not value:
+        raise RuntimeError(f"setting {WAL_ENV_PREFIX}{suffix} cannot be blank")
+    return value
+
+
+def _positive_wal_env(suffix: str, default: int) -> int:
+    name = f"{WAL_ENV_PREFIX}{suffix}"
     raw = os.environ.get(name, str(default)).strip()
     try:
         value = int(raw)

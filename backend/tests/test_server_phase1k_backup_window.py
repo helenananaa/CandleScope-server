@@ -114,15 +114,15 @@ def test_backup_bundle_publishes_anchor_then_fence_bound_backup(
         calls.append(("anchor", action, anchor_uri))
         return {"anchor_uri": "s3://bucket/prefix/anchors/v1/key/anchor.json"}
 
-    async def target_time() -> str:
-        calls.append("target")
-        return "2026-08-11 13:00:00.123456+00"
-
     async def backup(**arguments):
         calls.append(("backup", arguments))
         return {
             "write_fence_id": FENCE_ID,
             "write_fence_acquired_at_ms": 1_700_000_000_123,
+            "recovery_target_time": "2026-08-11 13:00:00.123456+00",
+            "recovery_target_lsn": "0/3000200",
+            "recovery_target_wal_filename": "000000010000000000000003",
+            "wal_segment_size_bytes": 16 * 1024 * 1024,
         }
 
     monkeypatch.setenv(
@@ -134,9 +134,6 @@ def test_backup_bundle_publishes_anchor_then_fence_bound_backup(
         "1700000000123",
     )
     monkeypatch.setattr(server_query_backup_bundle, "run_audit_anchor", anchor)
-    monkeypatch.setattr(
-        server_query_backup_bundle, "_database_target_time", target_time
-    )
     monkeypatch.setattr(server_query_backup_bundle, "run_backup_publish", backup)
     result = asyncio.run(
         server_query_backup_bundle.run(
@@ -145,11 +142,10 @@ def test_backup_bundle_publishes_anchor_then_fence_bound_backup(
         )
     )
     assert calls[0] == ("anchor", "publish", None)
-    assert calls[1] == "target"
-    backup_call = calls[2]
+    backup_call = calls[1]
     assert isinstance(backup_call, tuple)
-    assert backup_call[1]["recovery_target_time"] == ("2026-08-11 13:00:00.123456+00")
     assert backup_call[1]["audit_anchor_uri"].endswith("anchor.json")
+    assert result["recovery_target_lsn"] == "0/3000200"
     assert result["fence_id"] == FENCE_ID
     assert result["anchor"]["anchor_uri"].endswith("anchor.json")
 

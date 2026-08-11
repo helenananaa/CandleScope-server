@@ -18,6 +18,7 @@ from app.server_runtime.query_backup_catalog import (
     ImmutablePhysicalBackupCatalog,
     PhysicalBackupManifestSigner,
     PhysicalBackupRequest,
+    PhysicalBackupWalSegment,
     parse_postgres_backup_manifest,
 )
 from app.server_runtime.query_migrations import (
@@ -28,6 +29,12 @@ from app.server_runtime.query_migrations import (
 )
 from app.server_runtime.query_security import QueryAuditEvent
 from app.server_runtime.query_wal_archive import ImmutablePostgresWalArchive
+from app.server_runtime.query_wal_coverage import (
+    PostgresRecoveryTarget,
+    capture_postgres_recovery_target,
+    read_wal_coverage,
+    wal_segment_filenames,
+)
 from app.server_runtime.storage.postgres_query_control import (
     HOT_PROJECTION_QUARANTINE_TABLE,
     QUERY_AUDIT_EVENT_TABLE,
@@ -140,12 +147,12 @@ async def _run_gate() -> None:
         )
         anchor = await anchors.publish(before_target)
 
-        target_time = await _database_target_time()
+        target = await _database_recovery_target()
         await _write_container_file(
             docker,
             service="postgres",
             path="/base-backup/recovery_target_time",
-            data=(target_time + "\n").encode(),
+            data=(target.recovery_target_time + "\n").encode(),
         )
         runtime = PostgresQueryControlStore(
             RUNTIME_DSN,
@@ -161,7 +168,7 @@ async def _run_gate() -> None:
             await runtime.stop()
         assert await _verify(AUDITOR_DSN, "phase1j-fenced-head") == before_target
         await fence.heartbeat()
-        await _force_and_wait_for_wal_archive()
+        await _force_and_wait_for_wal_archive(fence=fence)
 
         wal_archive = ImmutablePostgresWalArchive(
             object_store=object_store,
@@ -178,6 +185,18 @@ async def _run_gate() -> None:
             for name in ("backup_manifest", "base.tar.gz", "pg_wal.tar.gz")
         }
         metadata = parse_postgres_backup_manifest(artifacts["backup_manifest"])
+        coverage_filenames = wal_segment_filenames(
+            timeline=metadata.timeline,
+            start_lsn=metadata.end_lsn,
+            end_lsn=target.recovery_target_lsn,
+            segment_size_bytes=target.wal_segment_size_bytes,
+        )
+        assert coverage_filenames[-1] == target.recovery_target_wal_filename
+        coverage_receipts = await read_wal_coverage(
+            wal_archive,
+            coverage_filenames,
+            segment_size_bytes=target.wal_segment_size_bytes,
+        )
         backup_id = str(uuid.uuid4())
         wal_prefix_uri = (
             object_store.uri_for(
@@ -187,6 +206,7 @@ async def _run_gate() -> None:
         )
         catalog = ImmutablePhysicalBackupCatalog(
             object_store=object_store,
+            wal_archive=wal_archive,
             signer=PhysicalBackupManifestSigner(
                 key_id="phase1j-backup-key",
                 secret=BACKUP_HMAC_SECRET,
@@ -200,13 +220,24 @@ async def _run_gate() -> None:
             created_at_ms=time.time_ns() // 1_000_000,
             write_fence_id=fence_receipt.fence_id,
             write_fence_acquired_at_ms=fence_receipt.acquired_at_ms,
-            recovery_target_time=target_time,
+            recovery_target_time=target.recovery_target_time,
+            recovery_target_lsn=target.recovery_target_lsn,
             postgres_version="18.4",
             system_identifier=metadata.system_identifier,
             timeline=metadata.timeline,
             start_lsn=metadata.start_lsn,
             end_lsn=metadata.end_lsn,
+            wal_segment_size_bytes=target.wal_segment_size_bytes,
             wal_archive_prefix_uri=wal_prefix_uri,
+            wal_coverage=tuple(
+                PhysicalBackupWalSegment(
+                    filename=item.filename,
+                    uri=item.uri,
+                    sha256=item.sha256,
+                    size_bytes=item.size_bytes,
+                )
+                for item in coverage_receipts
+            ),
             audit_anchor_uri=anchor.uri,
             audit_anchor_sha256=anchor.content_sha256,
             audit_head_sequence=before_target.head_audit_sequence,
@@ -221,7 +252,12 @@ async def _run_gate() -> None:
             expected_audit_anchor_uri=anchor.uri,
         )
         assert verified_backup.manifest_sha256 == published_backup.manifest_sha256
-        assert verified_backup.manifest.request.recovery_target_time == target_time
+        assert verified_backup.manifest.request.recovery_target_time == (
+            target.recovery_target_time
+        )
+        assert verified_backup.manifest.request.recovery_target_lsn == (
+            target.recovery_target_lsn
+        )
     finally:
         await fence.release()
 
@@ -391,28 +427,27 @@ async def _capture_base_backup(docker: str) -> None:
     )
 
 
-async def _database_target_time() -> str:
-    async with await psycopg.AsyncConnection.connect(ADMIN_DSN) as connection:
-        result = await connection.execute(
-            "SELECT to_char(clock_timestamp() AT TIME ZONE 'UTC', "
-            "'YYYY-MM-DD HH24:MI:SS.US\"+00\"')"
-        )
-        row = await result.fetchone()
-    assert row is not None
-    return str(row[0])
+async def _database_recovery_target() -> PostgresRecoveryTarget:
+    return await capture_postgres_recovery_target(AUDITOR_DSN)
 
 
-async def _force_and_wait_for_wal_archive() -> None:
+async def _force_and_wait_for_wal_archive(
+    *,
+    fence: PostgresQueryBackupFence | None = None,
+) -> None:
     async with await psycopg.AsyncConnection.connect(ADMIN_DSN) as connection:
-        result = await connection.execute(
-            "SELECT pg_walfile_name(pg_current_wal_lsn())"
+        await connection.set_autocommit(True)
+        await connection.execute(
+            "SELECT pg_create_restore_point('candlescope_phase1j_archive_gate')"
         )
+        result = await connection.execute("SELECT pg_walfile_name(pg_switch_wal())")
         row = await result.fetchone()
         assert row is not None
         required_filename = row[0]
-        await connection.execute("SELECT pg_switch_wal()")
-    deadline = asyncio.get_running_loop().time() + 10
+    deadline = asyncio.get_running_loop().time() + 30
     while asyncio.get_running_loop().time() < deadline:
+        if fence is not None:
+            await fence.heartbeat()
         async with await psycopg.AsyncConnection.connect(ADMIN_DSN) as connection:
             result = await connection.execute(
                 "SELECT last_archived_wal, failed_count FROM pg_stat_archiver"

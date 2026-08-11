@@ -13,6 +13,7 @@ from app.server_runtime.query_backup_catalog import (
     PhysicalBackupError,
     PhysicalBackupManifestSigner,
     PhysicalBackupRequest,
+    PhysicalBackupWalSegment,
     parse_postgres_backup_manifest,
 )
 from app.server_runtime.query_wal_archive import (
@@ -29,6 +30,9 @@ from scripts.server_query_backup_publish import (
 )
 
 SECRET = b"phase1j-backup-test-secret-is-at-least-32-bytes"
+WAL_SEGMENT_BYTES = b"w" * (1 << 20)
+WAL_FILENAME = "000000010000000000000030"
+WAL_PREFIX = "s3://candlescope-test/wal/v1/phase1j-primary/"
 
 
 def _postgres_manifest() -> bytes:
@@ -73,13 +77,21 @@ def _request() -> PhysicalBackupRequest:
         write_fence_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
         write_fence_acquired_at_ms=1_700_000_000_001,
         recovery_target_time="2026-08-11 13:00:00.123456+00",
+        recovery_target_lsn="0/3000200",
         postgres_version="18.4",
         system_identifier=7_672_760_263_611_183_147,
         timeline=1,
         start_lsn="0/3000028",
         end_lsn="0/3000120",
-        wal_archive_prefix_uri=(
-            "s3://candlescope-test/query-operations/wal/v1/phase1j-primary/"
+        wal_segment_size_bytes=1 << 20,
+        wal_archive_prefix_uri=WAL_PREFIX,
+        wal_coverage=(
+            PhysicalBackupWalSegment(
+                filename=WAL_FILENAME,
+                uri=WAL_PREFIX + WAL_FILENAME,
+                sha256=hashlib.sha256(WAL_SEGMENT_BYTES).hexdigest(),
+                size_bytes=len(WAL_SEGMENT_BYTES),
+            ),
         ),
         audit_anchor_uri=(
             "s3://candlescope-test/query-operations/anchors/v1/key/anchor.json"
@@ -98,8 +110,13 @@ def _catalog(
     max_artifact_bytes: int = 1024,
     max_total_bytes: int = 4096,
 ) -> ImmutablePhysicalBackupCatalog:
+    wal_archive = ImmutablePostgresWalArchive(
+        object_store=store,
+        cluster_id="phase1j-primary",
+    )
     return ImmutablePhysicalBackupCatalog(
         object_store=store,
+        wal_archive=wal_archive,
         signer=PhysicalBackupManifestSigner(
             key_id="phase1j-backup-key",
             secret=SECRET,
@@ -107,6 +124,14 @@ def _catalog(
         max_artifact_bytes=max_artifact_bytes,
         max_total_bytes=max_total_bytes,
     )
+
+
+async def _seed_coverage(store: InMemoryImmutableObjectStore) -> None:
+    archive = ImmutablePostgresWalArchive(
+        object_store=store,
+        cluster_id="phase1j-primary",
+    )
+    await archive.archive(WAL_FILENAME, WAL_SEGMENT_BYTES)
 
 
 def test_postgres_manifest_and_backup_catalog_round_trip_are_deterministic() -> None:
@@ -118,6 +143,7 @@ def test_postgres_manifest_and_backup_catalog_round_trip_are_deterministic() -> 
         assert metadata.end_lsn == "0/3000120"
         store = InMemoryImmutableObjectStore()
         await store.ensure_bucket()
+        await _seed_coverage(store)
         catalog = _catalog(store)
         first = await catalog.publish(_request(), _artifacts())
         replay = await catalog.publish(_request(), _artifacts())
@@ -126,8 +152,8 @@ def test_postgres_manifest_and_backup_catalog_round_trip_are_deterministic() -> 
         assert replay.created_artifacts == 0
         assert replay.manifest_created is False
         assert replay.manifest_sha256 == first.manifest_sha256
-        assert first.manifest.schema_version == "candlescope.query-physical-backup.v2"
-        assert "/backups/v2/" in first.manifest_uri
+        assert first.manifest.schema_version == "candlescope.query-physical-backup.v3"
+        assert "/backups/v3/" in first.manifest_uri
         verified = await catalog.verify(
             first.manifest_uri,
             expected_audit_anchor_uri=_request().audit_anchor_uri,
@@ -140,7 +166,7 @@ def test_postgres_manifest_and_backup_catalog_round_trip_are_deterministic() -> 
         assert verified.manifest.request.write_fence_id == (
             "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         )
-        assert len(store.objects) == 4
+        assert len(store.objects) == 5
 
     asyncio.run(run())
 
@@ -149,6 +175,7 @@ def test_backup_catalog_rejects_tamper_anchor_drift_and_artifact_bounds() -> Non
     async def run() -> None:
         store = InMemoryImmutableObjectStore()
         await store.ensure_bucket()
+        await _seed_coverage(store)
         catalog = _catalog(store)
         published = await catalog.publish(_request(), _artifacts())
         with pytest.raises(PhysicalBackupError, match="unexpected audit anchor"):
@@ -178,6 +205,7 @@ def test_backup_catalog_rejects_manifest_hmac_and_postgres_metadata_drift() -> N
     async def run() -> None:
         store = InMemoryImmutableObjectStore()
         await store.ensure_bucket()
+        await _seed_coverage(store)
         catalog = _catalog(store)
         published = await catalog.publish(_request(), _artifacts())
         manifest_key = next(
@@ -199,6 +227,29 @@ def test_backup_catalog_rejects_manifest_hmac_and_postgres_metadata_drift() -> N
         }
         with pytest.raises(PhysicalBackupError, match="differs"):
             await catalog.publish(_request(), changed)
+
+    asyncio.run(run())
+
+
+def test_backup_catalog_rejects_missing_or_changed_wal_coverage() -> None:
+    async def run() -> None:
+        store = InMemoryImmutableObjectStore()
+        await store.ensure_bucket()
+        await _seed_coverage(store)
+        catalog = _catalog(store)
+        published = await catalog.publish(_request(), _artifacts())
+        wal_key = f"wal/v1/phase1j-primary/{WAL_FILENAME}"
+        original = store.objects.pop(wal_key)
+        with pytest.raises(PhysicalBackupError, match="WAL coverage"):
+            await catalog.verify(published.manifest_uri)
+
+        store.objects[wal_key] = StoredObject(
+            data=b"x" * len(original.data),
+            metadata=original.metadata,
+            content_type=original.content_type,
+        )
+        with pytest.raises(PhysicalBackupError, match="WAL coverage"):
+            await catalog.verify(published.manifest_uri)
 
     asyncio.run(run())
 

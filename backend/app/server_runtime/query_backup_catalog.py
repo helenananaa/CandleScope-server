@@ -16,7 +16,7 @@ import rfc8785
 
 from app.server_runtime.object_store import ImmutableObjectStore
 
-PHYSICAL_BACKUP_SCHEMA_VERSION = "candlescope.query-physical-backup.v1"
+PHYSICAL_BACKUP_SCHEMA_VERSION = "candlescope.query-physical-backup.v2"
 PHYSICAL_BACKUP_ALGORITHM = "hmac-sha256"
 REQUIRED_BACKUP_ARTIFACTS = (
     "backup_manifest",
@@ -74,6 +74,8 @@ class PhysicalBackupRequest:
     backup_id: str
     cluster_id: str
     created_at_ms: int
+    write_fence_id: str
+    write_fence_acquired_at_ms: int
     recovery_target_time: str
     postgres_version: str
     system_identifier: int
@@ -92,11 +94,17 @@ class PhysicalBackupRequest:
         object.__setattr__(self, "backup_id", _uuid(self.backup_id, field="backup_id"))
         object.__setattr__(
             self,
+            "write_fence_id",
+            _uuid(self.write_fence_id, field="write_fence_id"),
+        )
+        object.__setattr__(
+            self,
             "cluster_id",
             _safe_token(self.cluster_id, field="cluster_id"),
         )
         for field in (
             "created_at_ms",
+            "write_fence_acquired_at_ms",
             "system_identifier",
             "timeline",
             "migration_version",
@@ -192,6 +200,8 @@ class PhysicalBackupManifest:
                 "backup_id": request.backup_id,
                 "cluster_id": request.cluster_id,
                 "created_at_ms": str(request.created_at_ms),
+                "write_fence_id": request.write_fence_id,
+                "write_fence_acquired_at_ms": str(request.write_fence_acquired_at_ms),
                 "recovery_target_time": request.recovery_target_time,
                 "postgres_version": request.postgres_version,
                 "system_identifier": str(request.system_identifier),
@@ -521,6 +531,8 @@ def _manifest_from_bytes(data: bytes) -> PhysicalBackupManifest:
         "backup_id",
         "cluster_id",
         "created_at_ms",
+        "write_fence_id",
+        "write_fence_acquired_at_ms",
         "recovery_target_time",
         "postgres_version",
         "system_identifier",
@@ -544,6 +556,11 @@ def _manifest_from_bytes(data: bytes) -> PhysicalBackupManifest:
             backup_id=backup["backup_id"],
             cluster_id=backup["cluster_id"],
             created_at_ms=_decimal(backup["created_at_ms"], field="created_at_ms"),
+            write_fence_id=backup["write_fence_id"],
+            write_fence_acquired_at_ms=_decimal(
+                backup["write_fence_acquired_at_ms"],
+                field="write_fence_acquired_at_ms",
+            ),
             recovery_target_time=backup["recovery_target_time"],
             postgres_version=backup["postgres_version"],
             system_identifier=_decimal(
@@ -602,11 +619,11 @@ def _artifact_from_wire(value: object) -> PhysicalBackupArtifact:
 
 
 def _artifact_key(request: PhysicalBackupRequest, name: str) -> str:
-    return f"backups/v1/{request.cluster_id}/{request.backup_id}/artifacts/{name}"
+    return f"backups/v2/{request.cluster_id}/{request.backup_id}/artifacts/{name}"
 
 
 def _manifest_key(request: PhysicalBackupRequest) -> str:
-    return f"backups/v1/{request.cluster_id}/{request.backup_id}/manifest.json"
+    return f"backups/v2/{request.cluster_id}/{request.backup_id}/manifest.json"
 
 
 def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:

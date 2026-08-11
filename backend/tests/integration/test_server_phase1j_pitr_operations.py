@@ -9,6 +9,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from app.server_runtime.query_control import QueryControlWriteFencedError
 from app.server_runtime.query_audit_anchor import (
     ImmutableQueryAuditAnchorRepository,
     QueryAuditAnchorSigner,
@@ -32,6 +33,7 @@ from app.server_runtime.storage.postgres_query_control import (
     QUERY_AUDIT_EVENT_TABLE,
     QUERY_AUDIT_HEAD_TABLE,
     PostgresQueryAuditVerifier,
+    PostgresQueryBackupFence,
     PostgresQueryControlStore,
 )
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
@@ -123,109 +125,119 @@ async def _run_gate() -> None:
     prefix = f"phase1j-{uuid.uuid4()}"
     object_store = _store(prefix)
     await object_store.ensure_bucket()
-    anchors = ImmutableQueryAuditAnchorRepository(
-        object_store=object_store,
-        signer=QueryAuditAnchorSigner(
-            key_id="phase1j-audit-key",
-            secret=AUDIT_HMAC_SECRET,
-        ),
+    fence = PostgresQueryBackupFence(
+        AUDITOR_DSN,
+        operator_id="phase1j-backup-window",
     )
-    anchor = await anchors.publish(before_target)
+    fence_receipt = await fence.acquire()
+    try:
+        anchors = ImmutableQueryAuditAnchorRepository(
+            object_store=object_store,
+            signer=QueryAuditAnchorSigner(
+                key_id="phase1j-audit-key",
+                secret=AUDIT_HMAC_SECRET,
+            ),
+        )
+        anchor = await anchors.publish(before_target)
 
-    target_time = await _database_target_time()
-    await _write_container_file(
-        docker,
-        service="postgres",
-        path="/base-backup/recovery_target_time",
-        data=(target_time + "\n").encode(),
-    )
+        target_time = await _database_target_time()
+        await _write_container_file(
+            docker,
+            service="postgres",
+            path="/base-backup/recovery_target_time",
+            data=(target_time + "\n").encode(),
+        )
+        runtime = PostgresQueryControlStore(
+            RUNTIME_DSN,
+            instance_id="phase1j-fenced-probe",
+        )
+        await runtime.start()
+        try:
+            with pytest.raises(QueryControlWriteFencedError, match="drained backup"):
+                await runtime.emit(
+                    _event("phase1j-fenced-write", timestamp_ms=1_700_000_000_003)
+                )
+        finally:
+            await runtime.stop()
+        assert await _verify(AUDITOR_DSN, "phase1j-fenced-head") == before_target
+        await fence.heartbeat()
+        await _force_and_wait_for_wal_archive()
+
+        wal_archive = ImmutablePostgresWalArchive(
+            object_store=object_store,
+            cluster_id=CLUSTER_ID,
+        )
+        await _round_trip_wal_archive(docker, wal_archive)
+
+        artifacts = {
+            name: await _read_container_file(
+                docker,
+                service="postgres",
+                path=f"/base-backup/current/{name}",
+            )
+            for name in ("backup_manifest", "base.tar.gz", "pg_wal.tar.gz")
+        }
+        metadata = parse_postgres_backup_manifest(artifacts["backup_manifest"])
+        backup_id = str(uuid.uuid4())
+        wal_prefix_uri = (
+            object_store.uri_for(
+                wal_archive.key_for("000000010000000000000000")
+            ).rsplit("/", 1)[0]
+            + "/"
+        )
+        catalog = ImmutablePhysicalBackupCatalog(
+            object_store=object_store,
+            signer=PhysicalBackupManifestSigner(
+                key_id="phase1j-backup-key",
+                secret=BACKUP_HMAC_SECRET,
+            ),
+            max_artifact_bytes=64 * 1024 * 1024,
+            max_total_bytes=128 * 1024 * 1024,
+        )
+        request = PhysicalBackupRequest(
+            backup_id=backup_id,
+            cluster_id=CLUSTER_ID,
+            created_at_ms=time.time_ns() // 1_000_000,
+            write_fence_id=fence_receipt.fence_id,
+            write_fence_acquired_at_ms=fence_receipt.acquired_at_ms,
+            recovery_target_time=target_time,
+            postgres_version="18.4",
+            system_identifier=metadata.system_identifier,
+            timeline=metadata.timeline,
+            start_lsn=metadata.start_lsn,
+            end_lsn=metadata.end_lsn,
+            wal_archive_prefix_uri=wal_prefix_uri,
+            audit_anchor_uri=anchor.uri,
+            audit_anchor_sha256=anchor.content_sha256,
+            audit_head_sequence=before_target.head_audit_sequence,
+            audit_head_event_hash=before_target.head_event_hash,
+            migration_version=before_target.migration_version,
+            migration_sha256=before_target.migration_sha256,
+        )
+        published_backup = await catalog.publish(request, artifacts)
+        assert published_backup.created_artifacts == 3
+        verified_backup = await catalog.verify(
+            published_backup.manifest_uri,
+            expected_audit_anchor_uri=anchor.uri,
+        )
+        assert verified_backup.manifest_sha256 == published_backup.manifest_sha256
+        assert verified_backup.manifest.request.recovery_target_time == target_time
+    finally:
+        await fence.release()
+
     await asyncio.sleep(0.05)
     runtime = PostgresQueryControlStore(RUNTIME_DSN, instance_id="phase1j-primary")
     await runtime.start()
     try:
         await runtime.emit(
-            _event("phase1j-after-target", timestamp_ms=1_700_000_000_003)
+            _event("phase1j-after-target", timestamp_ms=1_700_000_000_004)
         )
     finally:
         await runtime.stop()
     primary_after_target = await _verify(AUDITOR_DSN, "phase1j-primary-tail")
     assert primary_after_target.record_count == 3
     await _force_and_wait_for_wal_archive()
-
-    wal_archive = ImmutablePostgresWalArchive(
-        object_store=object_store,
-        cluster_id=CLUSTER_ID,
-    )
-    wal_filenames = await _container_filenames(docker, "/wal-archive")
-    assert any(len(filename) == 24 for filename in wal_filenames)
-    for filename in wal_filenames:
-        local_data = await _read_container_file(
-            docker,
-            service="postgres",
-            path=f"/wal-archive/{filename}",
-        )
-        archived = await wal_archive.archive(filename, local_data)
-        restored, restored_data = await wal_archive.restore(filename)
-        assert restored.sha256 == archived.sha256
-        assert restored_data == local_data
-        await _write_container_file(
-            docker,
-            service="postgres",
-            path=f"/wal-archive/{filename}",
-            data=restored_data,
-        )
-
-    artifacts = {
-        name: await _read_container_file(
-            docker,
-            service="postgres",
-            path=f"/base-backup/current/{name}",
-        )
-        for name in ("backup_manifest", "base.tar.gz", "pg_wal.tar.gz")
-    }
-    metadata = parse_postgres_backup_manifest(artifacts["backup_manifest"])
-    backup_id = str(uuid.uuid4())
-    wal_prefix_uri = (
-        object_store.uri_for(wal_archive.key_for("000000010000000000000000")).rsplit(
-            "/", 1
-        )[0]
-        + "/"
-    )
-    catalog = ImmutablePhysicalBackupCatalog(
-        object_store=object_store,
-        signer=PhysicalBackupManifestSigner(
-            key_id="phase1j-backup-key",
-            secret=BACKUP_HMAC_SECRET,
-        ),
-        max_artifact_bytes=64 * 1024 * 1024,
-        max_total_bytes=128 * 1024 * 1024,
-    )
-    request = PhysicalBackupRequest(
-        backup_id=backup_id,
-        cluster_id=CLUSTER_ID,
-        created_at_ms=time.time_ns() // 1_000_000,
-        recovery_target_time=target_time,
-        postgres_version="18.4",
-        system_identifier=metadata.system_identifier,
-        timeline=metadata.timeline,
-        start_lsn=metadata.start_lsn,
-        end_lsn=metadata.end_lsn,
-        wal_archive_prefix_uri=wal_prefix_uri,
-        audit_anchor_uri=anchor.uri,
-        audit_anchor_sha256=anchor.content_sha256,
-        audit_head_sequence=before_target.head_audit_sequence,
-        audit_head_event_hash=before_target.head_event_hash,
-        migration_version=before_target.migration_version,
-        migration_sha256=before_target.migration_sha256,
-    )
-    published_backup = await catalog.publish(request, artifacts)
-    assert published_backup.created_artifacts == 3
-    verified_backup = await catalog.verify(
-        published_backup.manifest_uri,
-        expected_audit_anchor_uri=anchor.uri,
-    )
-    assert verified_backup.manifest_sha256 == published_backup.manifest_sha256
-    assert verified_backup.manifest.request.recovery_target_time == target_time
+    await _round_trip_wal_archive(docker, wal_archive)
 
     for artifact in verified_backup.manifest.artifacts:
         stored = await object_store.get_uri(artifact.uri)
@@ -442,6 +454,30 @@ async def _container_filenames(docker: str, directory: str) -> tuple[str, ...]:
         "%f\\n",
     )
     return tuple(sorted(output.decode().splitlines()))
+
+
+async def _round_trip_wal_archive(
+    docker: str,
+    wal_archive: ImmutablePostgresWalArchive,
+) -> None:
+    wal_filenames = await _container_filenames(docker, "/wal-archive")
+    assert any(len(filename) == 24 for filename in wal_filenames)
+    for filename in wal_filenames:
+        local_data = await _read_container_file(
+            docker,
+            service="postgres",
+            path=f"/wal-archive/{filename}",
+        )
+        archived = await wal_archive.archive(filename, local_data)
+        restored, restored_data = await wal_archive.restore(filename)
+        assert restored.sha256 == archived.sha256
+        assert restored_data == local_data
+        await _write_container_file(
+            docker,
+            service="postgres",
+            path=f"/wal-archive/{filename}",
+            data=restored_data,
+        )
 
 
 async def _read_container_file(

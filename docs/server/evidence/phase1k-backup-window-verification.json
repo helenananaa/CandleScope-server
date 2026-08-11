@@ -1,0 +1,121 @@
+{
+  "schema_version": "candlescope.server-phase1k-backup-window-verification.v1",
+  "captured_at_utc": "2026-08-11T14:00:13Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "6bf314bb17c121e773b9976c49e7cd4825712730",
+  "phase": "phase1k-query-backup-window",
+  "phase1k_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false
+  },
+  "write_fence": {
+    "lock_name": "candlescope-query-backup-write-fence-v1",
+    "runtime_lock_mode": "shared transaction try-lock",
+    "backup_lock_mode": "exclusive session blocking lock",
+    "write_paths_fenced": ["audit emit", "quarantine latch", "quarantine clear"],
+    "new_write_behavior": "immediate fail closed",
+    "existing_shared_transaction_drained_before_acquire": true,
+    "second_coordinator_timeout_verified": true,
+    "auditor_least_privilege_revalidated": true,
+    "pg_stat_activity_and_pg_locks_verification": true,
+    "heartbeat_verifies_exclusive_lock": true,
+    "session_loss_releases_fence": true
+  },
+  "operator_entrypoints": {
+    "window": "backend/scripts/server_query_backup_window.py",
+    "bundle": "backend/scripts/server_query_backup_bundle.py",
+    "window_receipt_injected_by_environment": true,
+    "full_child_argv_returned": false,
+    "child_exit_code_propagated": true,
+    "runtime_timeout_terminates_direct_child": true,
+    "anchor_then_target_then_backup_order": true
+  },
+  "physical_backup_catalog": {
+    "schema_version": "candlescope.query-physical-backup.v2",
+    "object_path_version": "backups/v2",
+    "write_fence_id_signed": true,
+    "write_fence_acquired_at_ms_signed": true,
+    "live_operator_fence_required_before_publish": true,
+    "anchor_and_backup_object_store_credentials_can_be_separate": true,
+    "phase1j_integrity_fields_retained": true
+  },
+  "real_postgresql_18_gate": {
+    "existing_shared_writer_wait_observed": true,
+    "drain_observation_ms": 100,
+    "contending_coordinator_timeout_ms": 100,
+    "runtime_instances": 2,
+    "fenced_emit_attempts": 2,
+    "fenced_quarantine_latch_attempts": 1,
+    "record_count_while_fenced": 1,
+    "record_count_after_direct_release": 3,
+    "real_cli_child_duration_ms": 400,
+    "record_count_after_cli_release": 4,
+    "final_head_audit_sequence": 4,
+    "phase1j_pitr_with_fence_passed": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1K fence receipt, wrapper, timeout, and bundle unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1k_backup_window.py",
+      "result": "7 passed"
+    },
+    {
+      "name": "Phase 1K real multi-instance PostgreSQL write drain, contention, and CLI gate",
+      "command": "CANDLESCOPE_PHASE1K_INTEGRATION=1 CANDLESCOPE_PHASE1K_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1k_backup_window.py",
+      "result": "1 passed in 1.32s"
+    },
+    {
+      "name": "Phase 1J real fenced physical backup and target-time PITR regression",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 10.14s"
+    },
+    {
+      "name": "Phase 1A through 1K unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py",
+      "result": "90 passed"
+    },
+    {
+      "name": "Phase 1I real migration, privilege, anchor, backup, and restore regression",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1H real multi-instance regression",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1G real authentication, quota, parity, and quarantine regression",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 1F real HTTP hot and cold route regression",
+      "result": "1 passed, 2 skipped"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1K static, dependency, Compose, JSON, and patch hygiene",
+      "result": "ruff check and format passed for 11 files; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; four operator CLI help paths passed; Phase 1J and 1K evidence JSON strict parse passed; git diff check passed; no Phase 1 containers remained"
+    }
+  ],
+  "claims_not_made": [
+    "an embedded scheduler, systemd timer, Kubernetes CronJob, or alert route is deployed",
+    "application requests, ClickHouse queries, or Parquet reads are drained or cancelled",
+    "the advisory lock is a persistent lease across PostgreSQL restart or session loss",
+    "daemonized descendants remain supervised by the one-shot wrapper",
+    "orphan cleanup, retention, backup selection, or scheduled restore is automated",
+    "24 or 72 hour WAL continuity, storage outage recovery, or large backup capacity has passed",
+    "production RPO, RTO, off-site replication, PostgreSQL HA, or automatic failover is configured",
+    "the HMAC fence receipt is third-party non-repudiation proof",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

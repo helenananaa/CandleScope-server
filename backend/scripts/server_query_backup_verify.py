@@ -23,6 +23,7 @@ from app.server_runtime.query_backup_catalog import (
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_"
+ANCHOR_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_"
 
 
 async def run(
@@ -47,10 +48,10 @@ async def run(
         expected_audit_anchor_uri=audit_anchor_uri,
     )
     anchor = await ImmutableQueryAuditAnchorRepository(
-        object_store=store,
+        object_store=_anchor_store(),
         signer=QueryAuditAnchorSigner(
-            key_id=_required_env("ANCHOR_HMAC_KEY_ID"),
-            secret=_secret("ANCHOR_HMAC_SECRET_BASE64"),
+            key_id=_required_anchor_env("HMAC_KEY_ID"),
+            secret=_anchor_secret(),
         ),
     ).verify(audit_anchor_uri)
     _require_anchor_match(backup, anchor)
@@ -60,6 +61,8 @@ async def run(
         "cluster_id": request.cluster_id,
         "manifest_uri": backup.manifest_uri,
         "manifest_sha256": backup.manifest_sha256,
+        "write_fence_id": request.write_fence_id,
+        "write_fence_acquired_at_ms": request.write_fence_acquired_at_ms,
         "recovery_target_time": request.recovery_target_time,
         "audit_anchor_uri": request.audit_anchor_uri,
         "audit_anchor_sha256": request.audit_anchor_sha256,
@@ -128,6 +131,18 @@ def _store() -> S3ImmutableObjectStore:
     )
 
 
+def _anchor_store() -> S3ImmutableObjectStore:
+    return S3ImmutableObjectStore(
+        endpoint_url=_required_anchor_env("S3_ENDPOINT_URL"),
+        region=_optional_anchor_env("S3_REGION", "us-east-1"),
+        bucket=_required_anchor_env("S3_BUCKET"),
+        prefix=_required_anchor_env("S3_PREFIX"),
+        access_key_id=_required_anchor_env("S3_ACCESS_KEY_ID"),
+        secret_access_key=_required_anchor_env("S3_SECRET_ACCESS_KEY"),
+        request_timeout_ms=_positive_anchor_env("REQUEST_TIMEOUT_MS", 30_000),
+    )
+
+
 def _secret(suffix: str) -> bytes:
     try:
         secret = base64.b64decode(_required_env(suffix), validate=True)
@@ -137,6 +152,23 @@ def _secret(suffix: str) -> bytes:
         ) from exc
     if len(secret) < 32:
         raise RuntimeError(f"setting {ENV_PREFIX}{suffix} is shorter than 32 bytes")
+    return secret
+
+
+def _anchor_secret() -> bytes:
+    try:
+        secret = base64.b64decode(
+            _required_anchor_env("HMAC_SECRET_BASE64"),
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError(
+            f"setting {ANCHOR_ENV_PREFIX}HMAC_SECRET_BASE64 is not strict base64"
+        ) from exc
+    if len(secret) < 32:
+        raise RuntimeError(
+            f"setting {ANCHOR_ENV_PREFIX}HMAC_SECRET_BASE64 is shorter than 32 bytes"
+        )
     return secret
 
 
@@ -163,6 +195,33 @@ def _positive_env(suffix: str, default: int) -> int:
         raise RuntimeError(f"setting {ENV_PREFIX}{suffix} must be an integer") from exc
     if value <= 0:
         raise RuntimeError(f"setting {ENV_PREFIX}{suffix} must be positive")
+    return value
+
+
+def _required_anchor_env(suffix: str) -> str:
+    name = f"{ANCHOR_ENV_PREFIX}{suffix}"
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"required setting {name} is missing")
+    return value.strip()
+
+
+def _optional_anchor_env(suffix: str, default: str) -> str:
+    value = os.environ.get(f"{ANCHOR_ENV_PREFIX}{suffix}", default).strip()
+    if not value:
+        raise RuntimeError(f"setting {ANCHOR_ENV_PREFIX}{suffix} cannot be blank")
+    return value
+
+
+def _positive_anchor_env(suffix: str, default: int) -> int:
+    name = f"{ANCHOR_ENV_PREFIX}{suffix}"
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"setting {name} must be an integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"setting {name} must be positive")
     return value
 
 

@@ -22,8 +22,11 @@ from app.server_runtime.query_control import (
     HotProjectionControlState,
     HotProjectionGenerationConflictError,
     HotProjectionNotQuarantinedError,
+    QueryBackupFenceError,
+    QueryBackupFenceReceipt,
     QueryControlError,
     QueryControlUnavailableError,
+    QueryControlWriteFencedError,
 )
 from app.server_runtime.query_migrations import (
     QUERY_AUDITOR_GROUP_ROLE,
@@ -39,6 +42,7 @@ QUERY_AUDIT_EVENT_TABLE = "candlescope_query_audit_event"
 QUERY_AUDIT_HEAD_TABLE = "candlescope_query_audit_head"
 HOT_PROJECTION_QUARANTINE_TABLE = "candlescope_query_hot_quarantine"
 ZERO_AUDIT_HASH = "0" * 64
+QUERY_BACKUP_WRITE_FENCE_LOCK = "candlescope-query-backup-write-fence-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +128,7 @@ class PostgresQueryControlStore:
                 await self._connect() as connection,
                 connection.cursor() as cursor,
             ):
+                await _require_write_permit(cursor)
                 await self._append_audit(cursor, event)
         except psycopg.Error as exc:
             raise QueryControlUnavailableError(
@@ -168,6 +173,7 @@ class PostgresQueryControlStore:
                 await self._connect() as connection,
                 connection.cursor() as cursor,
             ):
+                await _require_write_permit(cursor)
                 row = await self._locked_state(cursor)
                 current = _state_from_row(row)
                 if current.active:
@@ -233,6 +239,7 @@ class PostgresQueryControlStore:
                 await self._connect() as connection,
                 connection.cursor() as cursor,
             ):
+                await _require_write_permit(cursor)
                 row = await self._locked_state(cursor)
                 current = _state_from_row(row)
                 if not current.active:
@@ -370,6 +377,149 @@ class PostgresQueryControlStore:
     def _require_started(self) -> None:
         if not self._started:
             raise QueryControlUnavailableError("query control store is not started")
+
+
+class PostgresQueryBackupFence:
+    """Drain query-control writers and hold an exclusive session-level fence."""
+
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        operator_id: str,
+        connect_timeout_ms: int = 5_000,
+        drain_timeout_ms: int = 30_000,
+    ) -> None:
+        self._dsn = _required_text(dsn, field="dsn", max_length=4_096)
+        self._operator_id = _backup_operator_id(operator_id)
+        self._connect_timeout_ms = _positive_int(
+            connect_timeout_ms,
+            field="connect_timeout_ms",
+        )
+        self._drain_timeout_ms = _positive_int(
+            drain_timeout_ms,
+            field="drain_timeout_ms",
+        )
+        self._connection: psycopg.AsyncConnection[dict[str, Any]] | None = None
+        self._receipt: QueryBackupFenceReceipt | None = None
+
+    @property
+    def receipt(self) -> QueryBackupFenceReceipt:
+        if self._receipt is None:
+            raise QueryBackupFenceError("query backup fence is not acquired")
+        return self._receipt
+
+    async def acquire(self) -> QueryBackupFenceReceipt:
+        if self._connection is not None:
+            raise QueryBackupFenceError("query backup fence is already acquired")
+        connection: psycopg.AsyncConnection[dict[str, Any]] | None = None
+        try:
+            connection = await _connect(
+                self._dsn,
+                application_name=(
+                    f"candlescope-query-backup-fence:{self._operator_id}"
+                ),
+                connect_timeout_ms=self._connect_timeout_ms,
+                request_timeout_ms=self._drain_timeout_ms,
+                read_only=True,
+            )
+            async with connection.cursor() as cursor:
+                await _validate_current_migration(cursor)
+                await _validate_auditor_privileges(cursor)
+                await cursor.execute(
+                    "SELECT pg_advisory_lock(hashtextextended(%s, 0))",
+                    (QUERY_BACKUP_WRITE_FENCE_LOCK,),
+                )
+                await cursor.execute(
+                    "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000) "
+                    "AS acquired_at_ms"
+                )
+                row = await cursor.fetchone()
+            if row is None:
+                raise QueryBackupFenceError(
+                    "PostgreSQL did not return the fence acquisition time"
+                )
+            receipt = QueryBackupFenceReceipt(
+                fence_id=str(uuid.uuid4()),
+                operator_id=self._operator_id,
+                acquired_at_ms=int(row["acquired_at_ms"]),
+            )
+        except (psycopg.Error, QueryBackupFenceError, TypeError, ValueError) as exc:
+            if connection is not None:
+                await connection.close()
+            raise QueryBackupFenceError(
+                "PostgreSQL query backup fence could not be acquired"
+            ) from exc
+        self._connection = connection
+        self._receipt = receipt
+        return receipt
+
+    async def heartbeat(self) -> None:
+        connection = self._require_connection()
+        try:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    """
+                    SELECT count(*) AS held
+                    FROM pg_locks
+                    WHERE pid = pg_backend_pid()
+                      AND locktype = 'advisory'
+                      AND mode = 'ExclusiveLock'
+                      AND granted
+                    """
+                )
+                row = await cursor.fetchone()
+        except psycopg.Error as exc:
+            raise QueryBackupFenceError(
+                "PostgreSQL query backup fence heartbeat failed"
+            ) from exc
+        if row is None or row["held"] != 1:
+            raise QueryBackupFenceError(
+                "PostgreSQL query backup fence lock is no longer held"
+            )
+
+    async def release(self) -> None:
+        connection = self._require_connection()
+        error: BaseException | None = None
+        try:
+            async with connection.cursor() as cursor:
+                await cursor.execute(
+                    "SELECT pg_advisory_unlock(hashtextextended(%s, 0)) AS released",
+                    (QUERY_BACKUP_WRITE_FENCE_LOCK,),
+                )
+                row = await cursor.fetchone()
+                if row is None or row["released"] is not True:
+                    raise QueryBackupFenceError(
+                        "PostgreSQL query backup fence was not released"
+                    )
+        except BaseException as exc:
+            error = exc
+        finally:
+            self._connection = None
+            self._receipt = None
+            await connection.close()
+        if error is not None:
+            if isinstance(error, QueryBackupFenceError):
+                raise error
+            raise QueryBackupFenceError(
+                "PostgreSQL query backup fence release failed"
+            ) from error
+
+    async def __aenter__(self) -> QueryBackupFenceReceipt:
+        return await self.acquire()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        await self.release()
+
+    def _require_connection(self) -> psycopg.AsyncConnection[dict[str, Any]]:
+        if self._connection is None:
+            raise QueryBackupFenceError("query backup fence is not acquired")
+        return self._connection
 
 
 class PostgresQueryAuditVerifier:
@@ -518,6 +668,37 @@ class PostgresQueryAuditVerifier:
         except (TypeError, ValueError) as exc:
             raise QueryControlError("quarantine audit state is invalid") from exc
 
+    async def require_backup_fence(self, operator_id: str) -> None:
+        self._require_started()
+        operator_id = _backup_operator_id(operator_id)
+        application_name = f"candlescope-query-backup-fence:{operator_id}"
+        try:
+            async with (
+                await self._connect() as connection,
+                connection.cursor() as cursor,
+            ):
+                await cursor.execute(
+                    """
+                    SELECT count(*) AS held
+                    FROM pg_stat_activity AS activity
+                    JOIN pg_locks AS lock ON lock.pid = activity.pid
+                    WHERE activity.application_name = %s
+                      AND lock.locktype = 'advisory'
+                      AND lock.mode = 'ExclusiveLock'
+                      AND lock.granted
+                    """,
+                    (application_name,),
+                )
+                row = await cursor.fetchone()
+        except psycopg.Error as exc:
+            raise QueryBackupFenceError(
+                "PostgreSQL query backup fence could not be verified"
+            ) from exc
+        if row is None or row["held"] != 1:
+            raise QueryBackupFenceError(
+                "the required PostgreSQL query backup fence is not held"
+            )
+
     async def _connect(self) -> psycopg.AsyncConnection[dict[str, Any]]:
         return await _connect(
             self._dsn,
@@ -554,6 +735,20 @@ async def _validate_current_migration(
             "query-control schema migration is missing or has drifted"
         )
     return migration
+
+
+async def _require_write_permit(
+    cursor: psycopg.AsyncCursor[dict[str, Any]],
+) -> None:
+    await cursor.execute(
+        "SELECT pg_try_advisory_xact_lock_shared(hashtextextended(%s, 0)) AS acquired",
+        (QUERY_BACKUP_WRITE_FENCE_LOCK,),
+    )
+    row = await cursor.fetchone()
+    if row is None or row["acquired"] is not True:
+        raise QueryControlWriteFencedError(
+            "query-control writes are fenced for a drained backup window"
+        )
 
 
 async def _validate_runtime_privileges(
@@ -839,6 +1034,16 @@ def _required_text(value: object, *, field: str, max_length: int) -> str:
     value = value.strip()
     if len(value) > max_length:
         raise ValueError(f"{field} must contain at most {max_length} characters")
+    return value
+
+
+def _backup_operator_id(value: object) -> str:
+    value = _required_text(value, field="operator_id", max_length=32)
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789._:-"
+    if value[0] not in "abcdefghijklmnopqrstuvwxyz0123456789" or any(
+        character not in allowed for character in value
+    ):
+        raise ValueError("operator_id must use lower-case safe ASCII")
     return value
 
 

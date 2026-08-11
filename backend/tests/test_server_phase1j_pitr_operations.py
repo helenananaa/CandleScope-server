@@ -70,6 +70,8 @@ def _request() -> PhysicalBackupRequest:
         backup_id=str(uuid.UUID("11111111-2222-4333-8444-555555555555")),
         cluster_id="phase1j-primary",
         created_at_ms=1_700_000_000_000,
+        write_fence_id="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        write_fence_acquired_at_ms=1_700_000_000_001,
         recovery_target_time="2026-08-11 13:00:00.123456+00",
         postgres_version="18.4",
         system_identifier=7_672_760_263_611_183_147,
@@ -124,6 +126,8 @@ def test_postgres_manifest_and_backup_catalog_round_trip_are_deterministic() -> 
         assert replay.created_artifacts == 0
         assert replay.manifest_created is False
         assert replay.manifest_sha256 == first.manifest_sha256
+        assert first.manifest.schema_version == "candlescope.query-physical-backup.v2"
+        assert "/backups/v2/" in first.manifest_uri
         verified = await catalog.verify(
             first.manifest_uri,
             expected_audit_anchor_uri=_request().audit_anchor_uri,
@@ -132,6 +136,9 @@ def test_postgres_manifest_and_backup_catalog_round_trip_are_deterministic() -> 
         assert (
             verified.manifest.request.recovery_target_time
             == "2026-08-11 13:00:00.123456+00"
+        )
+        assert verified.manifest.request.write_fence_id == (
+            "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
         )
         assert len(store.objects) == 4
 

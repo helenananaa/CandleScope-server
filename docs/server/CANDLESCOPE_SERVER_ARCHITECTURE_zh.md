@@ -104,6 +104,8 @@ Phase 1I 把 query-control DDL 从运行进程移到固定 SHA-256 的外部版�
 
 Phase 1J 增加 PostgreSQL 物理 base backup、连续 WAL archive 适配器和真实 target-time PITR 门禁。每套备份以不可变对象保存 PostgreSQL `backup_manifest`、`base.tar.gz`、`pg_wal.tar.gz`，并在 RFC 8785/HMAC 清单中绑定 system identifier、timeline、LSN 范围、精确 `recovery_target_time`、WAL 前缀和 Phase 1I 审计锚；恢复前必须同时验证清单、全部对象 hash 和锚点引用。WAL 文件名、大小、metadata 与内容 hash 均 fail closed，同名重放只接受完全相同的 bytes。物理恢复后 identity sequence 只承诺继续单调前进，不承诺与已提交审计记录连续：PostgreSQL sequence 的非事务语义和恢复重放会留下合法间隙，审计正确性仍由 record count、递增 sequence、previous hash 和 head 全链共同验证。
 
+Phase 1K 用一个固定 PostgreSQL advisory lock 建立 query-control 写入备份窗口。每个审计、quarantine latch 和 clear 事务必须先取得 shared transaction lock；备份协调器以 auditor 身份取得 exclusive session lock，只有既有 shared writer 全部结束后才返回成功，此后新写事务立即 fail closed。协调器持续 heartbeat 并把 fence UUID/取得时间写入物理备份 manifest v2；publisher 还会从 `pg_stat_activity/pg_locks` 反查指定 operator 的排他锁仍存在。这个机制只 drain PostgreSQL query-control 写事务，不声称停止已经在 ClickHouse/Parquet 执行的应用请求；这些请求在窗口内无法提交审计，因此对外仍 fail closed。
+
 冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。审计表当前仍按完整单链和全局唯一 sequence/hash 验证；在定义分区键、跨分区唯一性、链 checkpoint、备份和法定保留要求前，不启用自动分区或删除。
 
 ### SQLite

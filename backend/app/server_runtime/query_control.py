@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -17,12 +18,52 @@ class QueryControlUnavailableError(QueryControlError):
     """The shared control plane could not complete an operation."""
 
 
+class QueryControlWriteFencedError(QueryControlUnavailableError):
+    """A drained backup window currently rejects query-control writes."""
+
+
+class QueryBackupFenceError(QueryControlError):
+    """The exclusive query-control backup window could not be maintained."""
+
+
 class HotProjectionNotQuarantinedError(QueryControlError):
     """A clear command targeted a backend that is not quarantined."""
 
 
 class HotProjectionGenerationConflictError(QueryControlError):
     """A clear command used a stale quarantine generation."""
+
+
+@dataclass(frozen=True, slots=True)
+class QueryBackupFenceReceipt:
+    fence_id: str
+    operator_id: str
+    acquired_at_ms: int
+
+    def __post_init__(self) -> None:
+        try:
+            parsed = uuid.UUID(self.fence_id)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("fence_id must be a UUID") from exc
+        if self.fence_id != str(parsed):
+            raise ValueError("fence_id must be a canonical UUID")
+        object.__setattr__(
+            self,
+            "operator_id",
+            _backup_operator_id(self.operator_id),
+        )
+        object.__setattr__(
+            self,
+            "acquired_at_ms",
+            _non_negative_int(self.acquired_at_ms, field="acquired_at_ms"),
+        )
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "fence_id": self.fence_id,
+            "operator_id": self.operator_id,
+            "acquired_at_ms": self.acquired_at_ms,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,4 +317,14 @@ def _positive_int(value: object, *, field: str) -> int:
     value = _non_negative_int(value, field=field)
     if value == 0:
         raise ValueError(f"{field} must be positive")
+    return value
+
+
+def _backup_operator_id(value: object) -> str:
+    value = _required_text(value, field="operator_id", max_length=32)
+    allowed = "abcdefghijklmnopqrstuvwxyz0123456789._:-"
+    if value[0] not in "abcdefghijklmnopqrstuvwxyz0123456789" or any(
+        character not in allowed for character in value
+    ):
+        raise ValueError("operator_id must use lower-case safe ASCII")
     return value

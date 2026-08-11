@@ -29,6 +29,8 @@ from app.server_runtime.storage.postgres_query_control import (
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_"
+ANCHOR_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_"
+WINDOW_ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_WINDOW_"
 
 
 async def run(
@@ -56,10 +58,10 @@ async def run(
     metadata = parse_postgres_backup_manifest(artifacts["backup_manifest"])
     store = _store()
     anchors = ImmutableQueryAuditAnchorRepository(
-        object_store=store,
+        object_store=_anchor_store(),
         signer=QueryAuditAnchorSigner(
-            key_id=_required_env("ANCHOR_HMAC_KEY_ID"),
-            secret=_secret("ANCHOR_HMAC_SECRET_BASE64"),
+            key_id=_required_anchor_env("HMAC_KEY_ID"),
+            secret=_anchor_secret(),
         ),
     )
     verifier = PostgresQueryAuditVerifier(
@@ -70,6 +72,8 @@ async def run(
     )
     await verifier.start()
     try:
+        fence_operator_id = _required_window_env("OPERATOR_ID")
+        await verifier.require_backup_fence(fence_operator_id)
         database = await verifier.verify_audit_chain(
             max_records=_positive_env("MAX_AUDIT_RECORDS", 10_000)
         )
@@ -80,6 +84,8 @@ async def run(
         backup_id=backup_id,
         cluster_id=_required_env("CLUSTER_ID"),
         created_at_ms=created_at_ms,
+        write_fence_id=_required_window_env("FENCE_ID"),
+        write_fence_acquired_at_ms=_positive_window_env("FENCE_ACQUIRED_AT_MS"),
         recovery_target_time=recovery_target_time,
         postgres_version=_required_env("POSTGRES_VERSION"),
         system_identifier=metadata.system_identifier,
@@ -111,6 +117,10 @@ async def run(
         "manifest_sha256": result.manifest_sha256,
         "created_artifacts": result.created_artifacts,
         "manifest_created": result.manifest_created,
+        "write_fence_id": result.manifest.request.write_fence_id,
+        "write_fence_acquired_at_ms": (
+            result.manifest.request.write_fence_acquired_at_ms
+        ),
         "recovery_target_time": result.manifest.request.recovery_target_time,
         "audit_anchor_uri": result.manifest.request.audit_anchor_uri,
         "audit_head_sequence": result.manifest.request.audit_head_sequence,
@@ -212,6 +222,18 @@ def _store() -> S3ImmutableObjectStore:
     )
 
 
+def _anchor_store() -> S3ImmutableObjectStore:
+    return S3ImmutableObjectStore(
+        endpoint_url=_required_anchor_env("S3_ENDPOINT_URL"),
+        region=_optional_anchor_env("S3_REGION", "us-east-1"),
+        bucket=_required_anchor_env("S3_BUCKET"),
+        prefix=_required_anchor_env("S3_PREFIX"),
+        access_key_id=_required_anchor_env("S3_ACCESS_KEY_ID"),
+        secret_access_key=_required_anchor_env("S3_SECRET_ACCESS_KEY"),
+        request_timeout_ms=_positive_anchor_env("REQUEST_TIMEOUT_MS", 30_000),
+    )
+
+
 def _secret(suffix: str) -> bytes:
     try:
         secret = base64.b64decode(_required_env(suffix), validate=True)
@@ -221,6 +243,23 @@ def _secret(suffix: str) -> bytes:
         ) from exc
     if len(secret) < 32:
         raise RuntimeError(f"setting {ENV_PREFIX}{suffix} is shorter than 32 bytes")
+    return secret
+
+
+def _anchor_secret() -> bytes:
+    try:
+        secret = base64.b64decode(
+            _required_anchor_env("HMAC_SECRET_BASE64"),
+            validate=True,
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise RuntimeError(
+            f"setting {ANCHOR_ENV_PREFIX}HMAC_SECRET_BASE64 is not strict base64"
+        ) from exc
+    if len(secret) < 32:
+        raise RuntimeError(
+            f"setting {ANCHOR_ENV_PREFIX}HMAC_SECRET_BASE64 is shorter than 32 bytes"
+        )
     return secret
 
 
@@ -247,6 +286,53 @@ def _positive_env(suffix: str, default: int) -> int:
         raise RuntimeError(f"setting {ENV_PREFIX}{suffix} must be an integer") from exc
     if value <= 0:
         raise RuntimeError(f"setting {ENV_PREFIX}{suffix} must be positive")
+    return value
+
+
+def _required_window_env(suffix: str) -> str:
+    name = f"{WINDOW_ENV_PREFIX}{suffix}"
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"required setting {name} is missing")
+    return value.strip()
+
+
+def _positive_window_env(suffix: str) -> int:
+    name = f"{WINDOW_ENV_PREFIX}{suffix}"
+    raw = _required_window_env(suffix)
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"setting {name} must be an integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"setting {name} must be positive")
+    return value
+
+
+def _required_anchor_env(suffix: str) -> str:
+    name = f"{ANCHOR_ENV_PREFIX}{suffix}"
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        raise RuntimeError(f"required setting {name} is missing")
+    return value.strip()
+
+
+def _optional_anchor_env(suffix: str, default: str) -> str:
+    value = os.environ.get(f"{ANCHOR_ENV_PREFIX}{suffix}", default).strip()
+    if not value:
+        raise RuntimeError(f"setting {ANCHOR_ENV_PREFIX}{suffix} cannot be blank")
+    return value
+
+
+def _positive_anchor_env(suffix: str, default: int) -> int:
+    name = f"{ANCHOR_ENV_PREFIX}{suffix}"
+    raw = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"setting {name} must be an integer") from exc
+    if value <= 0:
+        raise RuntimeError(f"setting {name} must be positive")
     return value
 
 

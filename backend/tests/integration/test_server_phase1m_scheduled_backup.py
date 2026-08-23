@@ -45,6 +45,9 @@ async def _run_gate(monkeypatch) -> None:
         staging.chmod(0o700)
         locks.mkdir()
         locks.chmod(0o700)
+        inventory = root / "inventory"
+        inventory.mkdir()
+        inventory.chmod(0o700)
         passfile = root / "pgpass"
         passfile.write_text(
             "localhost:15432:*:candlescope_backup:phase1m-backup-local-only\n",
@@ -58,6 +61,8 @@ async def _run_gate(monkeypatch) -> None:
                 executable
             ),
             "CANDLESCOPE_SERVER_QUERY_BACKUP_JOB_BASEBACKUP_TIMEOUT_MS": "60000",
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_INVENTORY_ROOT": str(inventory),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_CLUSTER_ID": ("phase1p-primary"),
             "PGHOST": "localhost",
             "PGPORT": "15432",
             "PGDATABASE": "candlescope",
@@ -85,9 +90,12 @@ async def _run_gate(monkeypatch) -> None:
 
         monkeypatch.setattr(server_query_backup_job, "_run_process", process)
 
-        async def publish_history(_receipt):
+        async def publish_history(receipt):
             return {
                 "schema_version": "candlescope.query-backup-run-history.v1",
+                "cluster_id": "phase1p-primary",
+                "backup_id": receipt["backup_id"],
+                "completed_at_ms": receipt["completed_at_ms"],
                 "history_uri": "s3://history/success.json",
                 "history_sha256": "d" * 64,
                 "created": True,
@@ -104,6 +112,10 @@ async def _run_gate(monkeypatch) -> None:
         assert receipt["backup_id"] == RUN_ID
         assert receipt["manifest_sha256"] == "b" * 64
         assert list(staging.iterdir()) == []
+        inventory_files = list(inventory.iterdir())
+        assert len(inventory_files) == 1
+        assert inventory_files[0].name.endswith(f"-{RUN_ID}.json")
+        assert inventory_files[0].stat().st_mode & 0o777 == 0o600
 
 
 async def _configure_replication_role() -> None:

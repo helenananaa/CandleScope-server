@@ -4,6 +4,7 @@ import asyncio
 import base64
 import os
 import shutil
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -53,7 +54,11 @@ from app.server_runtime.storage.postgres_query_control import (
     PostgresQueryControlStore,
 )
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
-from scripts import server_query_backup_history, server_query_backup_select
+from scripts import (
+    server_query_backup_history,
+    server_query_backup_monitor,
+    server_query_backup_select,
+)
 
 COMPOSE_PATH = Path(__file__).resolve().parents[3] / "deploy/server/compose.phase1j.yml"
 MIGRATION_PATH = (
@@ -367,7 +372,12 @@ async def _exercise_phase1n_selection(
             secret=HISTORY_HMAC_SECRET,
         ),
     ).publish(receipt, cluster_id=CLUSTER_ID)
-    with pytest.MonkeyPatch.context() as monkeypatch:
+    with (
+        pytest.MonkeyPatch.context() as monkeypatch,
+        tempfile.TemporaryDirectory(prefix="candlescope-phase1p-") as inventory_name,
+    ):
+        inventory_root = Path(inventory_name)
+        inventory_root.chmod(0o700)
         settings = {
             "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
             "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_REGION": "us-east-1",
@@ -426,9 +436,30 @@ async def _exercise_phase1n_selection(
                 base64.b64encode(HISTORY_HMAC_SECRET).decode()
             ),
             "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_CLUSTER_ID": CLUSTER_ID,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_INVENTORY_ROOT": str(
+                inventory_root
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_CLUSTER_ID": CLUSTER_ID,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_LOOKBACK_MS": "2",
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_MAXIMUM_GAP_MS": "1",
         }
         for name, value in settings.items():
             monkeypatch.setenv(name, value)
+        inventory = server_query_backup_monitor.persist_success_reference(
+            receipt.to_wire(),
+            {
+                "schema_version": history.history.schema_version,
+                "cluster_id": history.history.cluster_id,
+                "backup_id": receipt.backup_id,
+                "completed_at_ms": receipt.completed_at_ms,
+                "history_uri": history.uri,
+                "history_sha256": history.content_sha256,
+                "created": history.created,
+            },
+        )
+        monitor = await server_query_backup_monitor.run(
+            evaluated_at_ms=completed_at_ms + 1,
+        )
         cadence = await server_query_backup_history.verify_cadence(
             history_uris=(history.uri,),
             expected_cluster_id=CLUSTER_ID,
@@ -446,6 +477,9 @@ async def _exercise_phase1n_selection(
         )
     assert cadence["status"] == "success-cadence-within-explicit-window"
     assert cadence["successful_run_count"] == 1
+    assert inventory["created"] is True
+    assert monitor["status"] == "healthy"
+    assert monitor["window_reference_count"] == 1
     assert result["status"] == "selected-and-fully-verified"
     assert result["selected_backup_fully_verified"] is True
     assert result["selected"]["backup_id"] == request.backup_id

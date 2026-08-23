@@ -2,7 +2,7 @@
 
 状态：QUERY_BACKUP_SCHEDULE_CONTRACT_COMPLETE_NOT_DEPLOYABLE
 
-后续状态：Phase 1N 已加入有界恢复候选选择；Phase 1O 又要求每次成功先把 v1 核心 receipt 签名并持久化到不可变对象，再输出带历史 URI/hash 的 v2 job result。Phase 1N 可以直接消费明确提供的签名历史 URI。本文件第 5 节关于“没有完整备份索引”的边界仍成立：没有对象列举、不可遗漏证明或全局 latest。当前边界分别以 Phase 1N/1O 执行文档为准。
+后续状态：Phase 1N 已加入有界恢复候选选择；Phase 1O 要求成功核心 receipt 先进入远端签名不可变历史；Phase 1P 再要求同一历史 URI/hash 写入主机私有、逐文件不可变的成功引用目录，供独立 monitor 自动收集。Phase 1N 可以直接消费明确提供的签名历史 URI。本文件关于“没有完整备份索引”的边界仍成立：没有对象列举、不可遗漏证明或全局 latest。当前边界分别以 Phase 1N–1P 执行文档为准。
 
 Phase 1M 延续独立快照查询进程；主 FastAPI `server` Profile 仍保持 fail closed。它把 Phase 1L 已验证但依赖人工拼接的物理备份步骤收敛为一个可由 systemd、CronJob 或其他外部调度器调用的一次性 job：
 
@@ -17,6 +17,7 @@ external scheduler
      -> Phase 1L manifest v3 + continuous WAL coverage
   -> strict two-receipt validation
   -> immutable HMAC-signed success history
+  -> host-private immutable success reference
   -> one scheduled-job result with history URI/hash
   -> staging cleanup + lock release
 ```
@@ -35,9 +36,10 @@ Phase 1M 不在 FastAPI 进程内加入 scheduler，也不把 timer 的存在当
 6. 调用已有 Phase 1K window，并在窗口内运行 Phase 1L bundle；
 7. 只接受恰好两行 canonical JSON，交叉核对 backup ID、fence ID/时间、成功 exit code、S3 URI、hash、WAL 覆盖数、恢复目标和 operator；
 8. 构造 `candlescope.query-backup-job-receipt.v1` 核心 receipt，并将其放入 `candlescope.query-backup-run-history.v1` HMAC envelope，以条件创建写入固定对象路径；
-9. 只有历史发布成功后才输出 `candlescope.query-backup-job-result.v2`，其中保留核心字段并加入历史 schema、URI、SHA-256 与 created 标记；最后清理 staging 并释放 lock。
+9. 把 cluster、backup ID、完成时间及历史 URI/hash 以 canonical `candlescope.query-backup-success-reference.v1` 写入 mode `0600` 的主机私有不可变文件；
+10. 只有远端历史和本机引用都成功后才输出 `candlescope.query-backup-job-result.v2`，其中保留核心字段并加入历史 schema、URI、SHA-256 与 created 标记；最后清理 staging 并释放 lock。
 
-子进程 runtime 和 stdout/stderr 均有界；超时或输出超限会终止整个 process group。失败 receipt 只包含 schema、run ID、phase、稳定错误码和可选 child exit code，不回显命令 stderr、DSN、密码、S3 key 或 HMAC secret。历史发布失败固定为 `SUCCESS_HISTORY_PUBLISH_FAILED`/`history`；staging 清理失败也会使 job 失败，不会把残留物改写成成功。
+子进程 runtime 和 stdout/stderr 均有界；超时或输出超限会终止整个 process group。失败 receipt 只包含 schema、run ID、phase、稳定错误码和可选 child exit code，不回显命令 stderr、DSN、密码、S3 key 或 HMAC secret。历史发布失败固定为 `SUCCESS_HISTORY_PUBLISH_FAILED`/`history`；主机引用失败固定为 `SUCCESS_INVENTORY_PERSIST_FAILED`/`inventory`。后者发生时远端不可变历史可能已经存在，但该 job 不报告成功。staging 清理失败也会使 job 失败，不会把残留物改写成成功。
 
 ## 2. 身份、凭据与互斥边界
 
@@ -50,17 +52,19 @@ job 拒绝 `PGPASSWORD`、`PGSERVICE` 和 `PGSERVICEFILE`。`PGPASSFILE` 必须�
 - `pg_basebackup` 只收到必要 libpq/SSL/locale allowlist，不会收到任何 `CANDLESCOPE_` S3、DSN 或 HMAC 配置；
 - backup window 会收到自身需要的 CandleScope 配置，但明确移除 replication 的 `PGHOST`、`PGUSER` 和 `PGPASSFILE` 等变量；
 - 签名历史在 window 成功后由父 job 发布，独立的 history S3/HMAC 配置不会传入 window 子进程；
+- Phase 1P monitor/inventory 配置也不会传入 window；本地引用目录必须由服务账号拥有、mode `0700`、绝对路径且不经过 symlink；
 - 同机 file lock 防止同一节点任务重叠；不同节点仍由 Phase 1K PostgreSQL exclusive advisory lock 串行化一致性窗口。
 
 file lock 不是分布式锁，PostgreSQL fence 也只保护 query-control 写事务；它们不停止 ClickHouse/Parquet 读请求，也不替代外部调度器的 missed-run、retry 或 leader-election 语义。
 
 ## 3. systemd 模板
 
-`deploy/server/systemd/` 提供：
+`deploy/server/systemd/` 提供 Phase 1M backup 及 Phase 1P monitor 模板：
 
 - hardened `candlescope-query-backup.service` oneshot；
 - 每天本地时间 02:00、最多 15 分钟随机延迟且支持 missed-run catch-up 的 timer；
 - `OnFailure` 触发的结构化 journal failure signal；
+- 独立的 hourly cadence monitor oneshot/timer 和 monitor 环境文件；
 - 完整环境文件示例和部署检查单。
 
 service 使用专用 `candlescope-backup` Unix 用户、私有 runtime/state 目录、`UMask=0077`、25 分钟 systemd 上限以及 filesystem/kernel/namespace hardening。job 内部 base backup 默认 15 分钟、window 默认 6 分钟；外层预算必须大于两者加清理开销。
@@ -90,7 +94,7 @@ docker compose -f deploy/server/compose.phase1j.yml --profile recovery down -v
 
 - systemd 模板没有安装或启用，当前没有正在运行的生产 timer；
 - journal failure signal 没有接入真实告警路由，也没有验证值班送达；
-- 已有不可变签名成功历史，但没有自动 retry/backoff、missed-run SLO、对象 list/完整性证明、orphan staging 扫描、retention/pruning 或恢复审批；
+- 已有远端签名历史和主机私有成功引用，但没有自动 retry/backoff、跨主机完整性证明、对象 list、orphan staging 扫描、retention/pruning 或恢复审批；
 - 没有将数据库/对象存储/HMAC secrets 接入生产 secret manager，环境文件仍只是示例；
 - 没有证明 24/72 小时连续调度、长期 WAL 健康、对象存储故障追赶、磁盘耗尽、网络分区、主机重启、多调度节点或大型物理备份容量；
 - Phase 1M 窄真实门禁没有重新证明完整 MinIO/PITR 链；该证明仍来自 Phase 1L 门禁；

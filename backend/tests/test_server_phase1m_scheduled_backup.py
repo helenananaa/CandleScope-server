@@ -22,15 +22,24 @@ def test_scheduled_job_runs_basebackup_then_window_and_emits_receipt(
     staging_root = _configure(tmp_path, monkeypatch)
     calls: list[tuple[str, ...]] = []
     histories: list[dict[str, object]] = []
+    inventories: list[tuple[dict[str, object], dict[str, object]]] = []
 
     async def publish_history(receipt):
         histories.append(receipt)
-        return _history_publication()
+        return _history_publication(receipt)
+
+    def persist_inventory(receipt, history):
+        inventories.append((receipt, history))
 
     monkeypatch.setattr(
         server_query_backup_job.server_query_backup_history,
         "publish_receipt",
         publish_history,
+    )
+    monkeypatch.setattr(
+        server_query_backup_job.server_query_backup_monitor,
+        "persist_success_reference",
+        persist_inventory,
     )
 
     async def process(command, **arguments):
@@ -58,6 +67,10 @@ def test_scheduled_job_runs_basebackup_then_window_and_emits_receipt(
             name.startswith("CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_")
             for name in arguments["environment"]
         )
+        assert not any(
+            name.startswith("CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_")
+            for name in arguments["environment"]
+        )
         assert command[-1] == RUN_ID
         assert command[-2] == "--backup-id"
         return server_query_backup_job._ProcessResult(0, _window_output())
@@ -76,6 +89,7 @@ def test_scheduled_job_runs_basebackup_then_window_and_emits_receipt(
     assert histories[0]["backup_id"] == receipt["backup_id"]
     assert receipt["success_history_uri"] == "s3://history/success.json"
     assert receipt["success_history_sha256"] == "d" * 64
+    assert inventories == [(histories[0], _history_publication(histories[0]))]
     assert list(staging_root.iterdir()) == []
 
 
@@ -274,6 +288,36 @@ def test_success_history_failure_fails_job_and_cleans_staging(
     assert list(staging_root.iterdir()) == []
 
 
+def test_success_inventory_failure_fails_job_and_cleans_staging(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    staging_root = _configure(tmp_path, monkeypatch)
+
+    async def process(command, **arguments):
+        if arguments["phase"] == "basebackup":
+            directory = Path(command[command.index("--pgdata") + 1])
+            for name in ("backup_manifest", "base.tar.gz", "pg_wal.tar.gz"):
+                (directory / name).write_bytes(b"x")
+            return server_query_backup_job._ProcessResult(0, b"")
+        return server_query_backup_job._ProcessResult(0, _window_output())
+
+    def fail_inventory(_receipt, _history):
+        raise RuntimeError("injected host success inventory failure")
+
+    monkeypatch.setattr(server_query_backup_job, "_run_process", process)
+    monkeypatch.setattr(
+        server_query_backup_job.server_query_backup_monitor,
+        "persist_success_reference",
+        fail_inventory,
+    )
+    with pytest.raises(server_query_backup_job.QueryBackupJobError) as captured:
+        asyncio.run(server_query_backup_job.run(run_id=RUN_ID))
+    assert captured.value.code == "SUCCESS_INVENTORY_PERSIST_FAILED"
+    assert captured.value.phase == "inventory"
+    assert list(staging_root.iterdir()) == []
+
+
 def test_failure_signal_and_systemd_templates_are_bounded() -> None:
     signal = server_query_backup_failure.run("candlescope-query-backup.service")
     assert signal["schema_version"] == ("candlescope.query-backup-failure-signal.v1")
@@ -309,6 +353,9 @@ def _configure(tmp_path: Path, monkeypatch) -> Path:
         "CANDLESCOPE_SERVER_QUERY_BACKUP_JOB_PG_BASEBACKUP_EXECUTABLE": (
             "/usr/bin/true"
         ),
+        "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_ALERT_HMAC_SECRET_BASE64": (
+            "must-not-reach-window"
+        ),
         "PGHOST": "localhost",
         "PGPORT": "5432",
         "PGDATABASE": "candlescope",
@@ -320,13 +367,21 @@ def _configure(tmp_path: Path, monkeypatch) -> Path:
     for name in ("PGPASSWORD", "PGSERVICE", "PGSERVICEFILE"):
         monkeypatch.delenv(name, raising=False)
 
-    async def publish_history(_receipt):
-        return _history_publication()
+    async def publish_history(receipt):
+        return _history_publication(receipt)
+
+    def persist_inventory(_receipt, _history):
+        return None
 
     monkeypatch.setattr(
         server_query_backup_job.server_query_backup_history,
         "publish_receipt",
         publish_history,
+    )
+    monkeypatch.setattr(
+        server_query_backup_job.server_query_backup_monitor,
+        "persist_success_reference",
+        persist_inventory,
     )
     return staging_root
 
@@ -368,9 +423,12 @@ def _window_output() -> bytes:
     ).encode()
 
 
-def _history_publication() -> dict[str, object]:
+def _history_publication(receipt: dict[str, object]) -> dict[str, object]:
     return {
         "schema_version": "candlescope.query-backup-run-history.v1",
+        "cluster_id": "phase1p-primary",
+        "backup_id": receipt["backup_id"],
+        "completed_at_ms": receipt["completed_at_ms"],
         "history_uri": "s3://history/success.json",
         "history_sha256": "d" * 64,
         "created": True,

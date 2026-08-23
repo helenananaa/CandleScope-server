@@ -1,27 +1,23 @@
 [Unit]
-Description=CandleScope query-control physical backup
-After=network-online.target
+Description=Monitor CandleScope query backup success cadence
+After=network-online.target candlescope-query-backup.service
 Wants=network-online.target
-OnFailure=candlescope-query-backup-failure@%n.service
 
 [Service]
 Type=oneshot
 User=candlescope-backup
 Group=candlescope-backup
 WorkingDirectory=/opt/candlescope
-EnvironmentFile=/etc/candlescope/query-backup.env
+EnvironmentFile=/etc/candlescope/query-backup-monitor.env
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/usr/bin/env /opt/candlescope/backend/.venv/bin/python /opt/candlescope/backend/scripts/server_query_backup_job.py
-TimeoutStartSec=25min
-RuntimeDirectory=candlescope-query-backup
-RuntimeDirectoryMode=0700
-StateDirectory=candlescope-query-backup
+ExecStart=/usr/bin/env /opt/candlescope/backend/.venv/bin/python /opt/candlescope/backend/scripts/server_query_backup_monitor.py
+TimeoutStartSec=2min
 StateDirectory=candlescope-query-backup-history
 StateDirectoryMode=0700
 UMask=0077
 StandardOutput=journal
 StandardError=journal
-SyslogIdentifier=candlescope-query-backup
+SyslogIdentifier=candlescope-query-backup-monitor
 NoNewPrivileges=yes
 PrivateDevices=yes
 PrivateTmp=yes

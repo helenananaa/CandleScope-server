@@ -114,6 +114,8 @@ Phase 1N 为恢复候选选择增加 fail-closed 门禁。操作员必须明确�
 
 Phase 1O 把每次 Phase 1M 成功的 v1 核心 receipt 放入独立的 RFC 8785/HMAC envelope，并按 cluster、完成时间和 backup UUID 条件写入不可变对象；历史写入失败会使整个 job 失败。job 对外成功结果升级为 v2，显式携带历史 URI/hash，Phase 1N 可直接从一组经验证的历史 URI 选择恢复候选，同时保留旧 v1 私有文件输入。cadence verifier 对调用方明确给出的窗口和最多 64 条历史计算窗口起点、相邻成功与窗口终点之间的最大间隔，默认上限 30 小时；它不使用对象 list，因此不证明集合完整、全局 latest 或 systemd 精确计划槽位，也不实现 retry、retention、delete、恢复审批或自动 restore。
 
+Phase 1P 把 Phase 1O 的显式 URI 门禁接到一个主机私有成功引用目录和独立 systemd monitor 模板。Phase 1M 只有在远端签名历史及本机逐文件不可变引用都落盘后才报告成功；monitor 默认每小时扫描最多 4096 个私有引用，以 72 小时窗口回源验证每个 history 的 HMAC/URI/hash 后复用 30 小时 cadence 门禁。异常使用独立 key 对最小化 alert JSON 做 HMAC-SHA256 并单次 POST 到 HTTPS webhook；客户端禁用环境代理和 redirect，并限制超时与响应体。该目录没有独立签名且只代表一个调度主机的观察，因此不能证明跨主机/对象存储历史完整；模板也没有安装，真实值班渠道送达、去重、冷却、重试和 escalation 仍是部署责任。
+
 冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。审计表当前仍按完整单链和全局唯一 sequence/hash 验证；在定义分区键、跨分区唯一性、链 checkpoint、备份和法定保留要求前，不启用自动分区或删除。
 
 ### SQLite

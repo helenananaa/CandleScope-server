@@ -1,0 +1,12 @@
+[Unit]
+Description=Schedule CandleScope query backup cadence monitoring
+
+[Timer]
+OnCalendar=hourly
+Persistent=yes
+RandomizedDelaySec=5min
+AccuracySec=1min
+Unit=candlescope-query-backup-monitor.service
+
+[Install]
+WantedBy=timers.target

@@ -2,6 +2,8 @@
 
 状态：QUERY_BACKUP_SIGNED_HISTORY_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1P 已加入主机私有成功引用目录、独立 cadence monitor 和 HMAC HTTPS webhook 投递门禁。Phase 1O 关于“不使用对象 list、不证明全局历史完整或精确计划槽位”的边界保持不变；当前运行边界以 Phase 1P 执行文档为准。
+
 Phase 1O 延续外部调度的一次性物理备份模型；主 FastAPI `server` Profile 仍保持 fail closed。它补上 Phase 1N 只能依赖 journal 或人工保存 receipt 的缺口：一次 Phase 1M job 只有在成功核心 receipt 已签名并条件写入不可变对象后，才允许对外报告成功。
 
 ```text
@@ -85,7 +87,7 @@ PYTHONPATH=backend backend/.venv/bin/python \
 
 - 没有对象 list、完整历史索引、不可遗漏证明或 global latest；
 - 没有安装/启用 systemd 模板，没有 24/72 小时连续运行证据，也没有 missed-run SLO；
-- cadence verifier 不是常驻监控器，未接入真实告警路由或验证值班送达；
+- Phase 1P 已提供独立 monitor/timer 模板和 webhook 传输门禁，但模板未安装，未接入或验证真实值班渠道送达；
 - 没有自动 retry/backoff、跨调度节点 leader election 或 orphan staging 扫描；
 - 没有 retention/pruning/delete、WORM/Object Lock、跨账号/异地复制的生产证明；
 - 没有自动 fallback、restore approval、双人控制、自动从空卷恢复或定期恢复演练；

@@ -1,0 +1,168 @@
+{
+  "schema_version": "candlescope.server-phase1p-backup-monitor-verification.v1",
+  "captured_at_utc": "2026-08-23T14:11:00Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "450b561a6755fcd574014ec21e48514c1f80b3e7",
+  "phase": "phase1p-host-backup-cadence-monitor",
+  "phase1p_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_systemd_enabled": false,
+    "production_webhook_called": false,
+    "automatic_restore_or_promotion": false,
+    "overwrite_or_delete_permission_added": false
+  },
+  "host_success_inventory": {
+    "schema_version": "candlescope.query-backup-success-reference.v1",
+    "rfc8785_canonical_bytes_required": true,
+    "private_owned_absolute_directory_required": true,
+    "directory_mode": "0700",
+    "reference_mode": "0600",
+    "symlinks_rejected": true,
+    "temporary_file_fsync_before_link": true,
+    "conditional_hard_link_publication": true,
+    "directory_fsync_used": true,
+    "byte_identical_replay_only": true,
+    "default_maximum_files": 4096,
+    "default_maximum_reference_bytes": 16384,
+    "local_inventory_independently_signed": false,
+    "automatic_repair_or_delete": false
+  },
+  "phase1m_integration": {
+    "remote_signed_history_required_first": true,
+    "host_reference_required_before_v2_success": true,
+    "inventory_failure_code": "SUCCESS_INVENTORY_PERSIST_FAILED",
+    "inventory_failure_phase": "inventory",
+    "remote_history_may_exist_after_inventory_failure": true,
+    "monitor_and_history_secrets_removed_from_window_environment": true,
+    "staging_cleanup_on_inventory_failure": true
+  },
+  "cadence_monitor": {
+    "schema_version": "candlescope.query-backup-cadence-monitor.v1",
+    "source": "host-private-success-inventory",
+    "default_lookback_ms": 259200000,
+    "default_maximum_histories": 64,
+    "default_maximum_gap_ms": 108000000,
+    "every_in_window_reference_refetched": true,
+    "history_hmac_and_canonical_uri_verified": true,
+    "reference_history_hash_backup_and_time_reconciled": true,
+    "window_edges_and_adjacent_gaps_verified": true,
+    "host_inventory_completeness_proven": false,
+    "global_history_completeness_proven": false,
+    "exact_systemd_slot_execution_proven": false
+  },
+  "alert_delivery": {
+    "alert_schema_version": "candlescope.query-backup-cadence-alert.v1",
+    "delivery_schema_version": "candlescope.query-backup-cadence-alert-delivery.v1",
+    "algorithm": "hmac-sha256",
+    "independent_alert_key": true,
+    "rfc8785_body_signed": true,
+    "production_https_required": true,
+    "credentials_query_and_fragment_in_url_rejected": true,
+    "ambient_proxy_disabled": true,
+    "redirect_followed": false,
+    "default_timeout_ms": 10000,
+    "default_maximum_response_bytes": 4096,
+    "two_xx_required": true,
+    "response_body_logged": false,
+    "retry_attempted": false,
+    "dedupe_cooldown_or_escalation_implemented": false,
+    "monitor_exit_zero_after_unhealthy_alert": false
+  },
+  "systemd_templates": {
+    "backup_history_state_directory_shared": true,
+    "monitor_oneshot": true,
+    "monitor_timeout_seconds": 120,
+    "monitor_hourly_timer": true,
+    "persistent_timer": true,
+    "randomized_delay_seconds": 300,
+    "strict_hardening": true,
+    "separate_monitor_environment_example": true,
+    "read_only_history_identity_documented": true,
+    "installed_or_enabled": false
+  },
+  "real_postgresql_18_minio_gate": {
+    "fresh_compose_volume": true,
+    "exclusive_write_fence": true,
+    "physical_backup_published": true,
+    "continuous_wal_coverage_published": true,
+    "signed_success_history_published_to_real_minio": true,
+    "host_success_reference_persisted": true,
+    "independent_monitor_refetched_real_history": true,
+    "explicit_cadence_window_verified": true,
+    "phase1n_selected_from_history_uri": true,
+    "selected_artifacts_wal_and_anchor_redownloaded": true,
+    "target_time_pitr_after_selection": true,
+    "post_target_event_absent": true,
+    "post_promotion_append_passed": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1P inventory, monitor, webhook, and systemd unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1p_backup_monitor.py",
+      "result": "7 passed in 0.86s"
+    },
+    {
+      "name": "Phase 1M through 1P focused contract gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1m_scheduled_backup.py backend/tests/test_server_phase1n_backup_selection.py backend/tests/test_server_phase1o_backup_history.py backend/tests/test_server_phase1p_backup_monitor.py",
+      "result": "32 passed in 1.04s"
+    },
+    {
+      "name": "Phase 1A through 1P unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py backend/tests/test_server_phase1l_wal_coverage.py backend/tests/test_server_phase1m_scheduled_backup.py backend/tests/test_server_phase1n_backup_selection.py backend/tests/test_server_phase1o_backup_history.py backend/tests/test_server_phase1p_backup_monitor.py",
+      "result": "129 passed in 2.03s"
+    },
+    {
+      "name": "Real PostgreSQL 18 and MinIO inventory, monitor, selection, verification, and PITR gate",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 9.88s from fresh Phase 1J test volumes"
+    },
+    {
+      "name": "Phase 1K real multi-instance write drain and fence regression",
+      "command": "CANDLESCOPE_PHASE1K_INTEGRATION=1 CANDLESCOPE_PHASE1K_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1k_backup_window.py",
+      "result": "1 passed in 1.44s"
+    },
+    {
+      "name": "Phase 1M real PostgreSQL 18 pg_basebackup and host inventory regression",
+      "command": "CANDLESCOPE_PHASE1M_INTEGRATION=1 CANDLESCOPE_PHASE1M_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1m_scheduled_backup.py",
+      "result": "1 passed in 1.37s"
+    },
+    {
+      "name": "Local real HTTP alert transport gate",
+      "command": "covered by backend/tests/test_server_phase1p_backup_monitor.py",
+      "result": "loopback server received and verified canonical body and HMAC; redirect and oversized response were rejected"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1P static, dependency, Compose, systemd, JSON, CLI, and patch hygiene",
+      "result": "ruff check and format passed for 7 touched Python files; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; five systemd units passed verification with two unrelated host-unit warnings; ten operator CLI help paths passed; evidence JSON strict parse and git diff check passed"
+    }
+  ],
+  "claims_not_made": [
+    "the host inventory is independently signed or tamper proof",
+    "the host inventory or explicitly supplied history set is complete",
+    "S3 listing, a complete immutable backup index, or a global latest backup exists",
+    "multiple scheduler hosts are aggregated or protected by leader election",
+    "an exact systemd schedule slot or missed-run SLO is proven",
+    "24 or 72 hours of production execution continuity has been observed",
+    "the systemd templates are installed or enabled",
+    "a production on-call webhook or real human delivery has been configured or verified",
+    "alert retry, dedupe, cooldown, escalation, or external delivery-receipt storage exists",
+    "orphan history discovery, inventory repair, retention, pruning, or deletion is automated",
+    "restore approval, dual control, automatic restore, or scheduled restore drills are implemented",
+    "production RPO, RTO, off-site replication, PostgreSQL HA, or automatic failover is configured",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

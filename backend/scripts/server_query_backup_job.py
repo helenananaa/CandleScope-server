@@ -21,7 +21,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.server_runtime.query_backup_catalog import REQUIRED_BACKUP_ARTIFACTS
-from scripts import server_query_backup_history
+from scripts import server_query_backup_history, server_query_backup_monitor
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_JOB_"
 WINDOW_SCRIPT = Path(__file__).with_name("server_query_backup_window.py")
@@ -152,7 +152,7 @@ async def run(*, run_id: str | None = None) -> dict[str, object]:
                 phase="history",
                 run_id=run_id,
             ) from exc
-        return {
+        result = {
             **receipt,
             "schema_version": RESULT_SCHEMA_VERSION,
             "success_history_schema_version": history["schema_version"],
@@ -160,6 +160,16 @@ async def run(*, run_id: str | None = None) -> dict[str, object]:
             "success_history_sha256": history["history_sha256"],
             "success_history_created": history["created"],
         }
+        try:
+            server_query_backup_monitor.persist_success_reference(receipt, history)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise QueryBackupJobError(
+                "host backup success reference could not be persisted",
+                code="SUCCESS_INVENTORY_PERSIST_FAILED",
+                phase="inventory",
+                run_id=run_id,
+            ) from exc
+        return result
     finally:
         try:
             if staging_directory is not None:
@@ -536,7 +546,12 @@ def _window_environment() -> dict[str, str]:
     ):
         environment.pop(name, None)
     for name in tuple(environment):
-        if name.startswith("CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_"):
+        if name.startswith(
+            (
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_",
+                "CANDLESCOPE_SERVER_QUERY_BACKUP_MONITOR_",
+            )
+        ):
             environment.pop(name)
     return environment
 

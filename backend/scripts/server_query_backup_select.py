@@ -20,7 +20,7 @@ from app.server_runtime.query_backup_selection import (
     RecoverySelectionError,
     select_recovery_candidate,
 )
-from scripts import server_query_backup_verify
+from scripts import server_query_backup_history, server_query_backup_verify
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_SELECT_"
 FAILURE_SCHEMA_VERSION = "candlescope.query-backup-recovery-selection-failure.v1"
@@ -34,23 +34,41 @@ async def run(
     expected_system_identifier: int,
     expected_timeline: int,
     now_ms: int | None = None,
+    history_uris: tuple[str, ...] = (),
 ) -> dict[str, object]:
     maximum_candidates = _positive_env(
         "MAXIMUM_CANDIDATES",
         DEFAULT_MAXIMUM_CANDIDATES,
     )
-    if not receipt_paths or len(receipt_paths) > maximum_candidates:
-        raise RecoverySelectionError("receipt path count is outside its bound")
-    receipts = tuple(
-        _read_receipt(
-            path,
-            maximum_bytes=_positive_env(
-                "MAXIMUM_RECEIPT_BYTES",
-                DEFAULT_MAXIMUM_RECEIPT_BYTES,
-            ),
+    if bool(receipt_paths) == bool(history_uris):
+        raise RecoverySelectionError(
+            "provide exactly one candidate source: receipt paths or history URIs"
         )
-        for path in receipt_paths
-    )
+    source_count = len(receipt_paths) if receipt_paths else len(history_uris)
+    if source_count > maximum_candidates:
+        raise RecoverySelectionError("candidate count exceeds its configured bound")
+    if receipt_paths:
+        receipts = tuple(
+            _read_receipt(
+                path,
+                maximum_bytes=_positive_env(
+                    "MAXIMUM_RECEIPT_BYTES",
+                    DEFAULT_MAXIMUM_RECEIPT_BYTES,
+                ),
+            )
+            for path in receipt_paths
+        )
+    else:
+        repository = server_query_backup_history.history_repository()
+        verified_histories = []
+        for uri in history_uris:
+            verified_histories.append(await repository.verify(uri))
+        histories = tuple(verified_histories)
+        receipts = tuple(item.history.receipt for item in histories)
+        if any(item.history.cluster_id != expected_cluster_id for item in histories):
+            raise RecoverySelectionError(
+                "signed backup history belongs to another cluster"
+            )
     catalog = server_query_backup_verify.backup_catalog()
     inspected = []
     for receipt in receipts:
@@ -91,7 +109,9 @@ def main() -> None:
             "fully verify the selected physical backup."
         )
     )
-    parser.add_argument("--receipt", required=True, action="append", type=Path)
+    candidate_source = parser.add_mutually_exclusive_group(required=True)
+    candidate_source.add_argument("--receipt", action="append", type=Path)
+    candidate_source.add_argument("--history-uri", action="append")
     parser.add_argument("--expected-cluster-id", required=True)
     parser.add_argument("--expected-system-identifier", required=True, type=int)
     parser.add_argument("--expected-timeline", required=True, type=int)
@@ -99,10 +119,11 @@ def main() -> None:
     try:
         result = asyncio.run(
             run(
-                receipt_paths=tuple(arguments.receipt),
+                receipt_paths=tuple(arguments.receipt or ()),
                 expected_cluster_id=arguments.expected_cluster_id,
                 expected_system_identifier=arguments.expected_system_identifier,
                 expected_timeline=arguments.expected_timeline,
+                history_uris=tuple(arguments.history_uri or ()),
             )
         )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:

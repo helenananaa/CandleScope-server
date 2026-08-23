@@ -2,7 +2,7 @@
 
 状态：QUERY_BACKUP_SCHEDULE_CONTRACT_COMPLETE_NOT_DEPLOYABLE
 
-后续状态：Phase 1N 已加入从明确提供的 Phase 1M 成功回执中选择唯一、新鲜恢复候选，并对选中项执行完整 manifest/artifact/WAL/anchor 复验的门禁。本文件第 5 节关于“没有备份选择索引”的描述仍成立：Phase 1N 不提供对象列举或全局 latest，只提供有界输入集合内的选择。当前恢复选择边界以 `CANDLESCOPE_SERVER_PHASE1N_EXECUTION_zh.md` 为准。
+后续状态：Phase 1N 已加入有界恢复候选选择；Phase 1O 又要求每次成功先把 v1 核心 receipt 签名并持久化到不可变对象，再输出带历史 URI/hash 的 v2 job result。Phase 1N 可以直接消费明确提供的签名历史 URI。本文件第 5 节关于“没有完整备份索引”的边界仍成立：没有对象列举、不可遗漏证明或全局 latest。当前边界分别以 Phase 1N/1O 执行文档为准。
 
 Phase 1M 延续独立快照查询进程；主 FastAPI `server` Profile 仍保持 fail closed。它把 Phase 1L 已验证但依赖人工拼接的物理备份步骤收敛为一个可由 systemd、CronJob 或其他外部调度器调用的一次性 job：
 
@@ -16,7 +16,8 @@ external scheduler
      -> Phase 1I audit anchor
      -> Phase 1L manifest v3 + continuous WAL coverage
   -> strict two-receipt validation
-  -> one scheduled-job receipt
+  -> immutable HMAC-signed success history
+  -> one scheduled-job result with history URI/hash
   -> staging cleanup + lock release
 ```
 
@@ -33,9 +34,10 @@ Phase 1M 不在 FastAPI 进程内加入 scheduler，也不把 timer 的存在当
 5. 只接受 `backup_manifest`、`base.tar.gz`、`pg_wal.tar.gz` 三个非空 regular file，额外、缺失或 symlink artifact 均失败；
 6. 调用已有 Phase 1K window，并在窗口内运行 Phase 1L bundle；
 7. 只接受恰好两行 canonical JSON，交叉核对 backup ID、fence ID/时间、成功 exit code、S3 URI、hash、WAL 覆盖数、恢复目标和 operator；
-8. 输出 `candlescope.query-backup-job-receipt.v1`，清理 staging 并释放 lock。
+8. 构造 `candlescope.query-backup-job-receipt.v1` 核心 receipt，并将其放入 `candlescope.query-backup-run-history.v1` HMAC envelope，以条件创建写入固定对象路径；
+9. 只有历史发布成功后才输出 `candlescope.query-backup-job-result.v2`，其中保留核心字段并加入历史 schema、URI、SHA-256 与 created 标记；最后清理 staging 并释放 lock。
 
-子进程 runtime 和 stdout/stderr 均有界；超时或输出超限会终止整个 process group。失败 receipt 只包含 schema、run ID、phase、稳定错误码和可选 child exit code，不回显命令 stderr、DSN、密码、S3 key 或 HMAC secret。staging 清理失败也会使 job 失败，不会把残留物改写成成功。
+子进程 runtime 和 stdout/stderr 均有界；超时或输出超限会终止整个 process group。失败 receipt 只包含 schema、run ID、phase、稳定错误码和可选 child exit code，不回显命令 stderr、DSN、密码、S3 key 或 HMAC secret。历史发布失败固定为 `SUCCESS_HISTORY_PUBLISH_FAILED`/`history`；staging 清理失败也会使 job 失败，不会把残留物改写成成功。
 
 ## 2. 身份、凭据与互斥边界
 
@@ -47,6 +49,7 @@ job 拒绝 `PGPASSWORD`、`PGSERVICE` 和 `PGSERVICEFILE`。`PGPASSFILE` 必须�
 
 - `pg_basebackup` 只收到必要 libpq/SSL/locale allowlist，不会收到任何 `CANDLESCOPE_` S3、DSN 或 HMAC 配置；
 - backup window 会收到自身需要的 CandleScope 配置，但明确移除 replication 的 `PGHOST`、`PGUSER` 和 `PGPASSFILE` 等变量；
+- 签名历史在 window 成功后由父 job 发布，独立的 history S3/HMAC 配置不会传入 window 子进程；
 - 同机 file lock 防止同一节点任务重叠；不同节点仍由 Phase 1K PostgreSQL exclusive advisory lock 串行化一致性窗口。
 
 file lock 不是分布式锁，PostgreSQL fence 也只保护 query-control 写事务；它们不停止 ClickHouse/Parquet 读请求，也不替代外部调度器的 missed-run、retry 或 leader-election 语义。
@@ -87,7 +90,7 @@ docker compose -f deploy/server/compose.phase1j.yml --profile recovery down -v
 
 - systemd 模板没有安装或启用，当前没有正在运行的生产 timer；
 - journal failure signal 没有接入真实告警路由，也没有验证值班送达；
-- 没有自动 retry/backoff、missed-run SLO、任务历史目录、orphan staging 扫描、retention/pruning、备份选择索引或恢复审批；
+- 已有不可变签名成功历史，但没有自动 retry/backoff、missed-run SLO、对象 list/完整性证明、orphan staging 扫描、retention/pruning 或恢复审批；
 - 没有将数据库/对象存储/HMAC secrets 接入生产 secret manager，环境文件仍只是示例；
 - 没有证明 24/72 小时连续调度、长期 WAL 健康、对象存储故障追赶、磁盘耗尽、网络分区、主机重启、多调度节点或大型物理备份容量；
 - Phase 1M 窄真实门禁没有重新证明完整 MinIO/PITR 链；该证明仍来自 Phase 1L 门禁；

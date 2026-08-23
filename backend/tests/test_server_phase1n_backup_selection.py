@@ -16,6 +16,10 @@ from app.server_runtime.query_backup_catalog import (
     PhysicalBackupWalSegment,
     PublishedPhysicalBackup,
 )
+from app.server_runtime.query_backup_history import (
+    BackupRunHistorySigner,
+    PublishedBackupRunHistory,
+)
 from app.server_runtime.query_backup_selection import (
     BackupJobReceipt,
     RecoverySelectionError,
@@ -37,6 +41,15 @@ def test_job_receipt_parser_is_exact_canonical_and_duplicate_safe() -> None:
     receipt = _receipt(published)
     parsed = BackupJobReceipt.from_canonical_bytes(_receipt_bytes(receipt))
     assert parsed == receipt
+    result = {
+        **receipt.to_wire(),
+        "schema_version": "candlescope.query-backup-job-result.v2",
+        "success_history_schema_version": ("candlescope.query-backup-run-history.v1"),
+        "success_history_uri": "s3://candlescope-test/backup-runs/run.json",
+        "success_history_sha256": "9" * 64,
+        "success_history_created": True,
+    }
+    assert BackupJobReceipt.from_canonical_bytes(_canonical_bytes(result)) == receipt
 
     wire = receipt.to_wire()
     wire["extra"] = True
@@ -282,6 +295,51 @@ def test_selection_cli_rejects_full_verification_drift(tmp_path, monkeypatch) ->
     assert verified_uris == [published.manifest_uri]
 
 
+def test_selection_cli_accepts_signed_history_uris(monkeypatch) -> None:
+    older = _published(OLDER_ID, "2026-08-11 13:00:00.000000+00")
+    latest = _published(LATEST_ID, "2026-08-11 14:00:00.000000+00")
+    histories = tuple(_history(item) for item in (older, latest))
+    repository = _HistoryRepository(histories)
+    monkeypatch.setattr(
+        server_query_backup_select.server_query_backup_history,
+        "history_repository",
+        lambda: repository,
+    )
+    monkeypatch.setattr(
+        server_query_backup_verify,
+        "backup_catalog",
+        lambda: _InspectCatalog((older, latest)),
+    )
+
+    async def verify(**arguments):
+        assert arguments["manifest_uri"] == latest.manifest_uri
+        return _verified(latest)
+
+    monkeypatch.setattr(server_query_backup_verify, "run", verify)
+    result = asyncio.run(
+        server_query_backup_select.run(
+            receipt_paths=(),
+            history_uris=tuple(item.uri for item in histories),
+            expected_cluster_id=CLUSTER_ID,
+            expected_system_identifier=SYSTEM_IDENTIFIER,
+            expected_timeline=1,
+            now_ms=_timestamp_ms("2026-08-11 14:10:00.000000+00"),
+        )
+    )
+    assert repository.verified == [item.uri for item in histories]
+    assert result["selected"]["backup_id"] == LATEST_ID
+
+
+class _HistoryRepository:
+    def __init__(self, histories: tuple[PublishedBackupRunHistory, ...]) -> None:
+        self._by_uri = {item.uri: item for item in histories}
+        self.verified: list[str] = []
+
+    async def verify(self, uri: str) -> PublishedBackupRunHistory:
+        self.verified.append(uri)
+        return self._by_uri[uri]
+
+
 class _InspectCatalog:
     def __init__(self, published: tuple[PublishedPhysicalBackup, ...]) -> None:
         self._by_uri = {item.manifest_uri: item for item in published}
@@ -377,6 +435,23 @@ def _receipt(published: PublishedPhysicalBackup) -> BackupJobReceipt:
         wal_coverage_segment_count=len(request.wal_coverage),
         write_fence_id=request.write_fence_id,
         operator_id="scheduled-backup",
+    )
+
+
+def _history(published: PublishedPhysicalBackup) -> PublishedBackupRunHistory:
+    receipt = _receipt(published)
+    history = BackupRunHistorySigner(
+        key_id="phase1o-history-key",
+        secret=b"phase1o-history-test-secret-is-at-least-32-bytes",
+    ).sign(receipt, cluster_id=CLUSTER_ID)
+    return PublishedBackupRunHistory(
+        uri=(
+            f"s3://candlescope-test/backup-runs/v1/{CLUSTER_ID}/"
+            f"{receipt.completed_at_ms:020d}-{receipt.backup_id}.json"
+        ),
+        content_sha256=hashlib.sha256(history.canonical_bytes()).hexdigest(),
+        history=history,
+        created=False,
     )
 
 

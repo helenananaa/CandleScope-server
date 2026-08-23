@@ -1,0 +1,141 @@
+{
+  "schema_version": "candlescope.server-phase1o-backup-history-verification.v1",
+  "captured_at_utc": "2026-08-23T13:55:13Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "170d86be1364471100d40c1f7cf7b4455eb79b23",
+  "phase": "phase1o-signed-backup-success-history",
+  "phase1o_passed": true,
+  "profile_boundary": {
+    "standalone_query_process": true,
+    "main_fastapi_server_profile_unlocked": false,
+    "personal_profile_changed": false,
+    "production_deployment_claimed": false,
+    "automatic_restore_or_promotion": false,
+    "global_history_completeness_claimed": false
+  },
+  "signed_success_history": {
+    "schema_version": "candlescope.query-backup-run-history.v1",
+    "algorithm": "hmac-sha256",
+    "rfc8785_canonical_bytes_required": true,
+    "exact_shape_required": true,
+    "nested_core_receipt_schema": "candlescope.query-backup-job-receipt.v1",
+    "independent_history_hmac_configuration": true,
+    "deterministic_key_fields": [
+      "cluster_id",
+      "completed_at_ms",
+      "backup_id"
+    ],
+    "put_if_absent_required": true,
+    "byte_identical_replay_only": true,
+    "canonical_uri_recomputed_on_verify": true,
+    "overwrite_or_delete_implemented": false
+  },
+  "phase1m_integration": {
+    "success_result_schema": "candlescope.query-backup-job-result.v2",
+    "history_publication_required_before_success": true,
+    "history_uri_and_sha256_exposed": true,
+    "history_publication_failure_code": "SUCCESS_HISTORY_PUBLISH_FAILED",
+    "history_publication_failure_phase": "history",
+    "history_secrets_removed_from_window_environment": true,
+    "staging_cleanup_on_history_failure": true
+  },
+  "phase1n_integration": {
+    "signed_history_uri_source_supported": true,
+    "private_v1_receipt_file_compatibility_retained": true,
+    "private_v2_result_file_compatibility_added": true,
+    "candidate_sources_mutually_exclusive": true,
+    "history_hmac_verified_before_manifest_inspection": true,
+    "history_cluster_reconciled": true,
+    "selected_backup_still_fully_verified": true,
+    "automatic_fallback_to_older_candidate": false
+  },
+  "cadence_policy": {
+    "schema_version": "candlescope.query-backup-success-cadence.v1",
+    "explicit_history_uris_required": true,
+    "default_maximum_histories": 64,
+    "default_maximum_gap_ms": 108000000,
+    "default_maximum_future_skew_ms": 300000,
+    "window_start_to_first_success_checked": true,
+    "adjacent_success_gaps_checked": true,
+    "last_success_to_window_end_checked": true,
+    "input_order_independent_scope_hash": true,
+    "duplicate_backup_or_uri_rejected": true,
+    "cross_cluster_history_rejected": true,
+    "global_history_completeness_proven": false,
+    "scheduled_slot_execution_proven": false
+  },
+  "real_postgresql_18_minio_gate": {
+    "fresh_compose_volume": true,
+    "stale_test_volume_explicitly_removed_before_final_gate": true,
+    "exclusive_write_fence": true,
+    "physical_backup_published": true,
+    "continuous_wal_coverage_published": true,
+    "signed_success_history_published_to_real_minio": true,
+    "explicit_cadence_window_verified": true,
+    "phase1n_selected_from_history_uri": true,
+    "selected_artifacts_wal_and_anchor_redownloaded": true,
+    "target_time_pitr_after_selection": true,
+    "post_target_event_absent": true,
+    "post_promotion_append_passed": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1O signed history and cadence unit gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1o_backup_history.py",
+      "result": "7 passed in 0.28s"
+    },
+    {
+      "name": "Phase 1M through 1O focused integration contract gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1m_scheduled_backup.py backend/tests/test_server_phase1n_backup_selection.py backend/tests/test_server_phase1o_backup_history.py",
+      "result": "24 passed in 0.65s"
+    },
+    {
+      "name": "Phase 1A through 1O unit contract and lifecycle gate",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1a_agg_trade.py backend/tests/test_server_phase1b_runtime.py backend/tests/test_server_phase1c_collector_service.py backend/tests/test_server_phase1d_clickhouse_writer.py backend/tests/test_server_phase1e_parquet_archive.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1h_query_control.py backend/tests/test_server_phase1i_query_operations.py backend/tests/test_server_phase1j_pitr_operations.py backend/tests/test_server_phase1k_backup_window.py backend/tests/test_server_phase1l_wal_coverage.py backend/tests/test_server_phase1m_scheduled_backup.py backend/tests/test_server_phase1n_backup_selection.py backend/tests/test_server_phase1o_backup_history.py",
+      "result": "121 passed in 1.75s"
+    },
+    {
+      "name": "Real PostgreSQL 18 and MinIO history, cadence, selection, verification, and PITR gate",
+      "command": "CANDLESCOPE_PHASE1J_INTEGRATION=1 CANDLESCOPE_PHASE1J_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1j_pitr_operations.py",
+      "result": "1 passed in 11.30s after explicit removal of the stale Phase 1J test volumes and fresh service startup"
+    },
+    {
+      "name": "Phase 1K real multi-instance write drain and fence regression",
+      "command": "CANDLESCOPE_PHASE1K_INTEGRATION=1 CANDLESCOPE_PHASE1K_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1k_backup_window.py",
+      "result": "1 passed in 1.53s"
+    },
+    {
+      "name": "Phase 1M real PostgreSQL 18 pg_basebackup and v2 job-result regression",
+      "command": "CANDLESCOPE_PHASE1M_INTEGRATION=1 CANDLESCOPE_PHASE1M_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1m_scheduled_backup.py",
+      "result": "1 passed in 1.42s"
+    },
+    {
+      "name": "Phase 0 contract and shared market stream regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py backend/tests/test_market_stream_models.py",
+      "result": "58 passed with 4 existing FastAPI deprecation warnings"
+    },
+    {
+      "name": "CCXT and exchange connection regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_ingestion_normalizers.py backend/tests/test_exchange_plugin_contracts.py backend/tests/test_exchange_capabilities_v2.py backend/tests/test_ccxt_unified_provider.py backend/tests/test_ccxt_provider_runtime.py backend/tests/test_ccxt_gap_recovery.py backend/tests/test_exchange_registry_plugins.py backend/tests/test_exchanges_api.py backend/tests/test_ccxt_binance_usdm_extension.py backend/tests/test_ccxt_binance_spot_extension.py backend/tests/test_binance_derivatives_market_data.py",
+      "result": "119 passed with 1 existing aiohttp deprecation warning"
+    },
+    {
+      "name": "Phase 1O static, dependency, Compose, systemd, JSON, CLI, and patch hygiene",
+      "result": "ruff check and format passed for 10 touched Python files; compileall passed; uv pip check passed for 70 packages; default and recovery-profile Compose config passed; systemd-analyze verify passed with two unrelated host-unit warnings; nine operator CLI help paths passed; evidence JSON strict parse and git diff check passed"
+    }
+  ],
+  "claims_not_made": [
+    "the explicitly supplied history set is complete or proves a global latest backup",
+    "S3 listing or a complete immutable backup index exists",
+    "an exact systemd schedule slot is proven by the success cadence",
+    "a missed-run SLO or 24 or 72 hour production continuity is proven",
+    "the systemd templates are installed or enabled",
+    "an external alert route or on-call delivery is configured",
+    "a damaged newest candidate automatically falls back to an older backup",
+    "restore approval, dual control, automatic restore, or scheduled restore drills are implemented",
+    "retention, pruning, deletion, WORM, object lock, or off-site replication is configured",
+    "production RPO, RTO, PostgreSQL HA, or automatic failover is configured",
+    "the main FastAPI server profile is supported",
+    "the complete CandleScope server is deployable"
+  ]
+}

@@ -21,6 +21,17 @@ def test_scheduled_job_runs_basebackup_then_window_and_emits_receipt(
 ) -> None:
     staging_root = _configure(tmp_path, monkeypatch)
     calls: list[tuple[str, ...]] = []
+    histories: list[dict[str, object]] = []
+
+    async def publish_history(receipt):
+        histories.append(receipt)
+        return _history_publication()
+
+    monkeypatch.setattr(
+        server_query_backup_job.server_query_backup_history,
+        "publish_receipt",
+        publish_history,
+    )
 
     async def process(command, **arguments):
         calls.append(command)
@@ -43,6 +54,10 @@ def test_scheduled_job_runs_basebackup_then_window_and_emits_receipt(
                 (directory / name).write_bytes(name.encode())
             return server_query_backup_job._ProcessResult(0, b"")
         assert "PGPASSFILE" not in arguments["environment"]
+        assert not any(
+            name.startswith("CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_")
+            for name in arguments["environment"]
+        )
         assert command[-1] == RUN_ID
         assert command[-2] == "--backup-id"
         return server_query_backup_job._ProcessResult(0, _window_output())
@@ -53,10 +68,14 @@ def test_scheduled_job_runs_basebackup_then_window_and_emits_receipt(
     assert len(calls) == 2
     assert calls[0][0] == "/usr/bin/true"
     assert calls[1][1].endswith("server_query_backup_window.py")
-    assert receipt["schema_version"] == ("candlescope.query-backup-job-receipt.v1")
+    assert receipt["schema_version"] == "candlescope.query-backup-job-result.v2"
     assert receipt["run_id"] == RUN_ID
     assert receipt["manifest_sha256"] == "b" * 64
     assert receipt["wal_coverage_segment_count"] == 2
+    assert histories[0]["schema_version"] == ("candlescope.query-backup-job-receipt.v1")
+    assert histories[0]["backup_id"] == receipt["backup_id"]
+    assert receipt["success_history_uri"] == "s3://history/success.json"
+    assert receipt["success_history_sha256"] == "d" * 64
     assert list(staging_root.iterdir()) == []
 
 
@@ -225,6 +244,36 @@ def test_cleanup_failure_still_releases_kernel_lock(tmp_path, monkeypatch) -> No
     os.close(descriptor)
 
 
+def test_success_history_failure_fails_job_and_cleans_staging(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    staging_root = _configure(tmp_path, monkeypatch)
+
+    async def process(command, **arguments):
+        if arguments["phase"] == "basebackup":
+            directory = Path(command[command.index("--pgdata") + 1])
+            for name in ("backup_manifest", "base.tar.gz", "pg_wal.tar.gz"):
+                (directory / name).write_bytes(b"x")
+            return server_query_backup_job._ProcessResult(0, b"")
+        return server_query_backup_job._ProcessResult(0, _window_output())
+
+    async def fail_history(_receipt):
+        raise RuntimeError("injected immutable history failure")
+
+    monkeypatch.setattr(server_query_backup_job, "_run_process", process)
+    monkeypatch.setattr(
+        server_query_backup_job.server_query_backup_history,
+        "publish_receipt",
+        fail_history,
+    )
+    with pytest.raises(server_query_backup_job.QueryBackupJobError) as captured:
+        asyncio.run(server_query_backup_job.run(run_id=RUN_ID))
+    assert captured.value.code == "SUCCESS_HISTORY_PUBLISH_FAILED"
+    assert captured.value.phase == "history"
+    assert list(staging_root.iterdir()) == []
+
+
 def test_failure_signal_and_systemd_templates_are_bounded() -> None:
     signal = server_query_backup_failure.run("candlescope-query-backup.service")
     assert signal["schema_version"] == ("candlescope.query-backup-failure-signal.v1")
@@ -270,6 +319,15 @@ def _configure(tmp_path: Path, monkeypatch) -> Path:
         monkeypatch.setenv(name, value)
     for name in ("PGPASSWORD", "PGSERVICE", "PGSERVICEFILE"):
         monkeypatch.delenv(name, raising=False)
+
+    async def publish_history(_receipt):
+        return _history_publication()
+
+    monkeypatch.setattr(
+        server_query_backup_job.server_query_backup_history,
+        "publish_receipt",
+        publish_history,
+    )
     return staging_root
 
 
@@ -308,3 +366,12 @@ def _window_output() -> bytes:
         + json.dumps(window, sort_keys=True, separators=(",", ":"))
         + "\n"
     ).encode()
+
+
+def _history_publication() -> dict[str, object]:
+    return {
+        "schema_version": "candlescope.query-backup-run-history.v1",
+        "history_uri": "s3://history/success.json",
+        "history_sha256": "d" * 64,
+        "created": True,
+    }

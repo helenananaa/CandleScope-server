@@ -21,11 +21,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from app.server_runtime.query_backup_catalog import REQUIRED_BACKUP_ARTIFACTS
+from scripts import server_query_backup_history
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_BACKUP_JOB_"
 WINDOW_SCRIPT = Path(__file__).with_name("server_query_backup_window.py")
 BUNDLE_SCRIPT = Path(__file__).with_name("server_query_backup_bundle.py")
 RECEIPT_SCHEMA_VERSION = "candlescope.query-backup-job-receipt.v1"
+RESULT_SCHEMA_VERSION = "candlescope.query-backup-job-result.v2"
 FAILURE_SCHEMA_VERSION = "candlescope.query-backup-job-failure.v1"
 
 
@@ -120,7 +122,7 @@ async def run(*, run_id: str | None = None) -> dict[str, object]:
         completed_at_ms = time.time_ns() // 1_000_000
         backup = bundle_receipt["backup"]
         anchor = bundle_receipt["anchor"]
-        return {
+        receipt = {
             "schema_version": RECEIPT_SCHEMA_VERSION,
             "status": "succeeded",
             "run_id": run_id,
@@ -140,6 +142,23 @@ async def run(*, run_id: str | None = None) -> dict[str, object]:
             "wal_coverage_segment_count": backup["wal_coverage_segment_count"],
             "write_fence_id": bundle_receipt["fence_id"],
             "operator_id": window_receipt["operator_id"],
+        }
+        try:
+            history = await server_query_backup_history.publish_receipt(receipt)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            raise QueryBackupJobError(
+                "immutable backup success history could not be published",
+                code="SUCCESS_HISTORY_PUBLISH_FAILED",
+                phase="history",
+                run_id=run_id,
+            ) from exc
+        return {
+            **receipt,
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "success_history_schema_version": history["schema_version"],
+            "success_history_uri": history["history_uri"],
+            "success_history_sha256": history["history_sha256"],
+            "success_history_created": history["created"],
         }
     finally:
         try:
@@ -516,6 +535,9 @@ def _window_environment() -> dict[str, str]:
         "PGCONNECT_TIMEOUT",
     ):
         environment.pop(name, None)
+    for name in tuple(environment):
+        if name.startswith("CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_"):
+            environment.pop(name)
     return environment
 
 

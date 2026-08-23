@@ -16,6 +16,7 @@ import rfc8785
 from app.server_runtime.query_backup_catalog import PublishedPhysicalBackup
 
 BACKUP_JOB_RECEIPT_SCHEMA_VERSION = "candlescope.query-backup-job-receipt.v1"
+BACKUP_JOB_RESULT_SCHEMA_VERSION = "candlescope.query-backup-job-result.v2"
 RECOVERY_SELECTION_SCHEMA_VERSION = "candlescope.query-backup-recovery-selection.v1"
 DEFAULT_MAXIMUM_CANDIDATES = 32
 DEFAULT_MAXIMUM_AGE_MS = 30 * 60 * 60 * 1_000
@@ -40,6 +41,12 @@ _RECEIPT_FIELDS = {
     "wal_coverage_segment_count",
     "write_fence_id",
     "operator_id",
+}
+_RESULT_FIELDS = _RECEIPT_FIELDS | {
+    "success_history_schema_version",
+    "success_history_uri",
+    "success_history_sha256",
+    "success_history_created",
 }
 
 
@@ -153,14 +160,46 @@ class BackupJobReceipt:
             raise RecoverySelectionError(
                 "backup job receipt is not strict JSON"
             ) from exc
-        if (
-            not isinstance(wire, dict)
-            or set(wire) != _RECEIPT_FIELDS
-            or text != _canonical_json(wire) + "\n"
-        ):
+        if not isinstance(wire, dict) or text != _canonical_json(wire) + "\n":
             raise RecoverySelectionError(
                 "backup job receipt is not canonical or has an unexpected shape"
             )
+        if set(wire) == _RESULT_FIELDS:
+            try:
+                if wire["schema_version"] != BACKUP_JOB_RESULT_SCHEMA_VERSION:
+                    raise ValueError("result schema")
+                if (
+                    wire["success_history_schema_version"]
+                    != "candlescope.query-backup-run-history.v1"
+                ):
+                    raise ValueError("history schema")
+                _s3_uri(wire["success_history_uri"], field="success_history_uri")
+                _sha256(
+                    wire["success_history_sha256"],
+                    field="success_history_sha256",
+                )
+                if not isinstance(wire["success_history_created"], bool):
+                    raise TypeError("success_history_created")
+            except (TypeError, ValueError) as exc:
+                raise RecoverySelectionError(
+                    "backup job result history reference is invalid"
+                ) from exc
+            wire = {
+                key: value
+                for key, value in wire.items()
+                if key not in _RESULT_FIELDS - _RECEIPT_FIELDS
+            }
+            wire["schema_version"] = BACKUP_JOB_RECEIPT_SCHEMA_VERSION
+        elif set(wire) != _RECEIPT_FIELDS:
+            raise RecoverySelectionError(
+                "backup job receipt is not canonical or has an unexpected shape"
+            )
+        return cls.from_wire(wire)
+
+    @classmethod
+    def from_wire(cls, wire: object) -> BackupJobReceipt:
+        if not isinstance(wire, dict) or set(wire) != _RECEIPT_FIELDS:
+            raise RecoverySelectionError("backup job receipt shape is invalid")
         try:
             return cls(**wire)
         except (TypeError, ValueError) as exc:

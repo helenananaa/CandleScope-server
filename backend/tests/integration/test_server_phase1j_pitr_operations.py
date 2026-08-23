@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import json
 import os
 import shutil
-import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -25,6 +23,10 @@ from app.server_runtime.query_backup_catalog import (
     PhysicalBackupWalSegment,
     PublishedPhysicalBackup,
     parse_postgres_backup_manifest,
+)
+from app.server_runtime.query_backup_history import (
+    BackupRunHistorySigner,
+    ImmutableBackupRunHistoryRepository,
 )
 from app.server_runtime.query_backup_selection import BackupJobReceipt
 from app.server_runtime.query_control import QueryControlWriteFencedError
@@ -51,7 +53,7 @@ from app.server_runtime.storage.postgres_query_control import (
     PostgresQueryControlStore,
 )
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
-from scripts import server_query_backup_select
+from scripts import server_query_backup_history, server_query_backup_select
 
 COMPOSE_PATH = Path(__file__).resolve().parents[3] / "deploy/server/compose.phase1j.yml"
 MIGRATION_PATH = (
@@ -89,6 +91,7 @@ S3_SECRET_ACCESS_KEY = "phase1j-local-secret"
 CLUSTER_ID = "phase1j-primary"
 AUDIT_HMAC_SECRET = b"phase1j-audit-anchor-secret-is-at-least-32-bytes"
 BACKUP_HMAC_SECRET = b"phase1j-backup-catalog-secret-is-at-least-32-bytes"
+HISTORY_HMAC_SECRET = b"phase1o-backup-history-secret-is-at-least-32-bytes"
 
 
 @pytest.mark.skipif(
@@ -357,73 +360,92 @@ async def _exercise_phase1n_selection(
         write_fence_id=request.write_fence_id,
         operator_id="phase1j-backup-window",
     )
-    with tempfile.TemporaryDirectory(prefix="candlescope-phase1n-") as directory:
-        path = Path(directory) / "phase1m-receipt.json"
-        path.write_text(
-            json.dumps(receipt.to_wire(), sort_keys=True, separators=(",", ":")) + "\n",
-            encoding="utf-8",
+    history = await ImmutableBackupRunHistoryRepository(
+        object_store=_store(prefix),
+        signer=BackupRunHistorySigner(
+            key_id="phase1o-history-key",
+            secret=HISTORY_HMAC_SECRET,
+        ),
+    ).publish(receipt, cluster_id=CLUSTER_ID)
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        settings = {
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_REGION": "us-east-1",
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_BUCKET": S3_BUCKET,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_PREFIX": prefix,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ACCESS_KEY_ID": (S3_ACCESS_KEY_ID),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_SECRET_ACCESS_KEY": (
+                S3_SECRET_ACCESS_KEY
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_BACKUP_HMAC_KEY_ID": (
+                "phase1j-backup-key"
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_BACKUP_HMAC_SECRET_BASE64": (
+                base64.b64encode(BACKUP_HMAC_SECRET).decode()
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_CLUSTER_ID": CLUSTER_ID,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MAX_ARTIFACT_BYTES": str(64 * 1024 * 1024),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_MAX_TOTAL_BYTES": str(128 * 1024 * 1024),
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_ENDPOINT_URL": (S3_ENDPOINT_URL),
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_REGION": "us-east-1",
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_BUCKET": S3_BUCKET,
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_PREFIX": prefix,
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_ACCESS_KEY_ID": (
+                S3_ACCESS_KEY_ID
+            ),
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_SECRET_ACCESS_KEY": (
+                S3_SECRET_ACCESS_KEY
+            ),
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_HMAC_KEY_ID": ("phase1j-audit-key"),
+            "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_HMAC_SECRET_BASE64": (
+                base64.b64encode(AUDIT_HMAC_SECRET).decode()
+            ),
+            "CANDLESCOPE_SERVER_QUERY_WAL_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
+            "CANDLESCOPE_SERVER_QUERY_WAL_S3_REGION": "us-east-1",
+            "CANDLESCOPE_SERVER_QUERY_WAL_S3_BUCKET": S3_BUCKET,
+            "CANDLESCOPE_SERVER_QUERY_WAL_S3_PREFIX": prefix,
+            "CANDLESCOPE_SERVER_QUERY_WAL_S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
+            "CANDLESCOPE_SERVER_QUERY_WAL_S3_SECRET_ACCESS_KEY": (S3_SECRET_ACCESS_KEY),
+            "CANDLESCOPE_SERVER_QUERY_WAL_CLUSTER_ID": CLUSTER_ID,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_S3_ENDPOINT_URL": (
+                S3_ENDPOINT_URL
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_S3_REGION": "us-east-1",
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_S3_BUCKET": S3_BUCKET,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_S3_PREFIX": prefix,
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_S3_ACCESS_KEY_ID": (
+                S3_ACCESS_KEY_ID
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_S3_SECRET_ACCESS_KEY": (
+                S3_SECRET_ACCESS_KEY
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_HMAC_KEY_ID": (
+                "phase1o-history-key"
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_HMAC_SECRET_BASE64": (
+                base64.b64encode(HISTORY_HMAC_SECRET).decode()
+            ),
+            "CANDLESCOPE_SERVER_QUERY_BACKUP_HISTORY_CLUSTER_ID": CLUSTER_ID,
+        }
+        for name, value in settings.items():
+            monkeypatch.setenv(name, value)
+        cadence = await server_query_backup_history.verify_cadence(
+            history_uris=(history.uri,),
+            expected_cluster_id=CLUSTER_ID,
+            window_start_ms=completed_at_ms - 1,
+            window_end_ms=completed_at_ms + 1,
+            evaluated_at_ms=completed_at_ms + 1,
         )
-        path.chmod(0o600)
-        with pytest.MonkeyPatch.context() as monkeypatch:
-            settings = {
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_REGION": "us-east-1",
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_BUCKET": S3_BUCKET,
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_PREFIX": prefix,
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_ACCESS_KEY_ID": (S3_ACCESS_KEY_ID),
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_S3_SECRET_ACCESS_KEY": (
-                    S3_SECRET_ACCESS_KEY
-                ),
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_BACKUP_HMAC_KEY_ID": (
-                    "phase1j-backup-key"
-                ),
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_BACKUP_HMAC_SECRET_BASE64": (
-                    base64.b64encode(BACKUP_HMAC_SECRET).decode()
-                ),
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_CLUSTER_ID": CLUSTER_ID,
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_MAX_ARTIFACT_BYTES": str(
-                    64 * 1024 * 1024
-                ),
-                "CANDLESCOPE_SERVER_QUERY_BACKUP_MAX_TOTAL_BYTES": str(
-                    128 * 1024 * 1024
-                ),
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_ENDPOINT_URL": (
-                    S3_ENDPOINT_URL
-                ),
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_REGION": "us-east-1",
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_BUCKET": S3_BUCKET,
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_PREFIX": prefix,
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_ACCESS_KEY_ID": (
-                    S3_ACCESS_KEY_ID
-                ),
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_S3_SECRET_ACCESS_KEY": (
-                    S3_SECRET_ACCESS_KEY
-                ),
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_HMAC_KEY_ID": (
-                    "phase1j-audit-key"
-                ),
-                "CANDLESCOPE_SERVER_QUERY_AUDIT_ANCHOR_HMAC_SECRET_BASE64": (
-                    base64.b64encode(AUDIT_HMAC_SECRET).decode()
-                ),
-                "CANDLESCOPE_SERVER_QUERY_WAL_S3_ENDPOINT_URL": S3_ENDPOINT_URL,
-                "CANDLESCOPE_SERVER_QUERY_WAL_S3_REGION": "us-east-1",
-                "CANDLESCOPE_SERVER_QUERY_WAL_S3_BUCKET": S3_BUCKET,
-                "CANDLESCOPE_SERVER_QUERY_WAL_S3_PREFIX": prefix,
-                "CANDLESCOPE_SERVER_QUERY_WAL_S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
-                "CANDLESCOPE_SERVER_QUERY_WAL_S3_SECRET_ACCESS_KEY": (
-                    S3_SECRET_ACCESS_KEY
-                ),
-                "CANDLESCOPE_SERVER_QUERY_WAL_CLUSTER_ID": CLUSTER_ID,
-            }
-            for name, value in settings.items():
-                monkeypatch.setenv(name, value)
-            result = await server_query_backup_select.run(
-                receipt_paths=(path,),
-                expected_cluster_id=CLUSTER_ID,
-                expected_system_identifier=request.system_identifier,
-                expected_timeline=request.timeline,
-                now_ms=completed_at_ms,
-            )
+        result = await server_query_backup_select.run(
+            receipt_paths=(),
+            history_uris=(history.uri,),
+            expected_cluster_id=CLUSTER_ID,
+            expected_system_identifier=request.system_identifier,
+            expected_timeline=request.timeline,
+            now_ms=completed_at_ms,
+        )
+    assert cadence["status"] == "success-cadence-within-explicit-window"
+    assert cadence["successful_run_count"] == 1
     assert result["status"] == "selected-and-fully-verified"
     assert result["selected_backup_fully_verified"] is True
     assert result["selected"]["backup_id"] == request.backup_id

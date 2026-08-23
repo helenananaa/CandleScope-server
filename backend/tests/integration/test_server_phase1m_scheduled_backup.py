@@ -84,8 +84,23 @@ async def _run_gate(monkeypatch) -> None:
             return server_query_backup_job._ProcessResult(0, _window_output())
 
         monkeypatch.setattr(server_query_backup_job, "_run_process", process)
+
+        async def publish_history(_receipt):
+            return {
+                "schema_version": "candlescope.query-backup-run-history.v1",
+                "history_uri": "s3://history/success.json",
+                "history_sha256": "d" * 64,
+                "created": True,
+            }
+
+        monkeypatch.setattr(
+            server_query_backup_job.server_query_backup_history,
+            "publish_receipt",
+            publish_history,
+        )
         receipt = await server_query_backup_job.run(run_id=RUN_ID)
         assert receipt["status"] == "succeeded"
+        assert receipt["schema_version"] == "candlescope.query-backup-job-result.v2"
         assert receipt["backup_id"] == RUN_ID
         assert receipt["manifest_sha256"] == "b" * 64
         assert list(staging.iterdir()) == []

@@ -1,0 +1,72 @@
+{
+  "schema_version": "candlescope.server-phase1r-soak-rehearsal-verification.v1",
+  "captured_at_utc": "2026-08-24T07:31:44Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1r-vertical-chain-rehearsal",
+  "phase1r_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "public_24h_supervisor_delivered": false,
+    "twenty_four_hour_public_continuity": false,
+    "replay_service_composition_changed": false,
+    "pid_alive_accepted_as_success": false
+  },
+  "reconciliation": {
+    "schema_version": "candlescope.server-chain-reconciliation.v1",
+    "quiet_checkpoint": "caught_up",
+    "allowed_intermediate": "lagging",
+    "physical_next_offset": "collector.last_partition_offset + 1",
+    "logical_last_sequence": "collector.last_sequence",
+    "consumers_may_not_run_ahead": true,
+    "archive_query_replay_snapshots_must_match": true,
+    "query_sequences_must_be_contiguous": true,
+    "replay_span_must_match_query_facts": true
+  },
+  "rehearsal": {
+    "mode": "rehearsal",
+    "collector_process": "synthetic_from_published_records",
+    "kafka_offsets": [0, 1, 2, 3],
+    "sequences": [42, 43, 44, 45],
+    "idempotent_rearchive_verified": true,
+    "phase1q_replay_source_used": true,
+    "in_memory_object_store": true,
+    "in_memory_projector": true
+  },
+  "public_24h": {
+    "command": "scripts/server_phase1r_soak.py public-24h",
+    "unauthorized_code": "PUBLIC_SOAK_NOT_AUTHORIZED",
+    "authorized_but_undelivered_code": "PUBLIC_SOAK_SUPERVISOR_NOT_DELIVERED",
+    "required_duration_ms": 86400000,
+    "claims_continuity": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1R reconciliation, rehearsal, CLI refusal, and server profile fail-closed",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1r_soak.py -q",
+      "result": "9 passed"
+    },
+    {
+      "name": "Phase 1Q replay snapshot regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1q_replay_snapshot.py -q",
+      "result": "10 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/chain_reconciliation.py backend/app/server_runtime/soak_rehearsal.py backend/scripts/server_phase1r_soak.py backend/tests/test_server_phase1r_soak.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/chain_reconciliation.py backend/app/server_runtime/soak_rehearsal.py backend/scripts/server_phase1r_soak.py backend/tests/test_server_phase1r_soak.py",
+      "result": "passed"
+    },
+    {
+      "name": "compilation and patch hygiene",
+      "result": "compileall passed; git diff --check passed for Phase 1R files"
+    }
+  ],
+  "claims_not_made": [
+    "Binance public 24 hour continuity has passed",
+    "a deployable collector/writer/archiver soak supervisor exists",
+    "real Redpanda/ClickHouse/MinIO process-restart soak evidence was recaptured in this phase",
+    "the FastAPI server profile is supported",
+    "ReplayService now consumes server snapshots",
+    "PID liveness or health.ready is sufficient proof of durability"
+  ]
+}

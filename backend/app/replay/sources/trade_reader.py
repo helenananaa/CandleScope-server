@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from app.data_engine.storage.raw_trade_archive import (
     RawAggTradeArchive,
@@ -154,6 +154,32 @@ class ReplayTradeSequencePage:
     revealed_sequence: int
     has_more: bool
     data_epoch: str
+
+
+@runtime_checkable
+class ReplayTradePageReader(Protocol):
+    """Sync page contract used by TradeReplaySource for any frozen dataset."""
+
+    dataset_ref: Any
+    page_rows: int
+
+    @property
+    def data_epoch(self) -> str: ...
+
+    def read_page(
+        self,
+        after: RawAggTradeCursor | None = None,
+        *,
+        limit: int | None = None,
+    ) -> ReplayTradePage: ...
+
+    def read_sequence_page(
+        self,
+        *,
+        after_sequence: int,
+        revealed_sequence: int,
+        limit: int,
+    ) -> ReplayTradeSequencePage: ...
 
 
 class PagedReplayTradeReader:
@@ -452,5 +478,6 @@ __all__ = [
     "PagedReplayTradeReader",
     "ReplayTrade",
     "ReplayTradePage",
+    "ReplayTradePageReader",
     "ReplayTradeSequencePage",
 ]

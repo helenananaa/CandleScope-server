@@ -28,6 +28,13 @@ from app.server_runtime.query_control import (
     QueryControlError,
 )
 from app.server_runtime.query_cursor import ProjectionCursorError
+from app.server_runtime.query_identity import (
+    QueryCallerScopeError,
+    QueryOrganizationScopeError,
+    QueryWorkspaceScopeError,
+    require_organization_scope,
+    require_workspace_scope,
+)
 from app.server_runtime.query_router import (
     HotProjectionParityError,
     HotProjectionQuarantinedError,
@@ -102,6 +109,8 @@ class SnapshotQueryRequest(_StrictModel):
     limit: Annotated[int, Field(gt=0)]
     cursor: CursorRequest | None = None
     preference: Literal["auto", "hot", "cold"] = "auto"
+    organization_id: Annotated[str | None, Field(default=None, max_length=64)] = None
+    workspace_id: Annotated[str | None, Field(default=None, max_length=64)] = None
 
 
 class ClearHotProjectionQuarantineRequest(_StrictModel):
@@ -128,6 +137,8 @@ class QueryApiMetrics:
     control_unauthorized_total: int = 0
     quarantine_clears_total: int = 0
     audit_failures_total: int = 0
+    organization_scope_denied_total: int = 0
+    workspace_scope_denied_total: int = 0
 
     def to_wire(self) -> dict[str, int]:
         return {
@@ -142,6 +153,8 @@ class QueryApiMetrics:
             "control_unauthorized_total": self.control_unauthorized_total,
             "quarantine_clears_total": self.quarantine_clears_total,
             "audit_failures_total": self.audit_failures_total,
+            "organization_scope_denied_total": self.organization_scope_denied_total,
+            "workspace_scope_denied_total": self.workspace_scope_denied_total,
         }
 
 
@@ -484,7 +497,14 @@ def create_snapshot_query_app(
         outcome = "internal_error"
         backend: str | None = None
         partition_key: str | None = None
+        organization_id: str | None = None
+        workspace_id: str | None = None
         try:
+            organization_id, workspace_id = _bound_caller_scope(
+                authenticator,
+                query_request.organization_id,
+                query_request.workspace_id,
+            )
             await asyncio.wait_for(
                 semaphore.acquire(),
                 timeout=query_queue_timeout_ms / 1_000,
@@ -505,6 +525,24 @@ def create_snapshot_query_app(
             wire = _route_result_wire(result)
             status_code = 200
             outcome = "success"
+        except QueryCallerScopeError as exc:
+            metrics.failures_total += 1
+            if authenticator.identity is not None:
+                organization_id = authenticator.identity.organization_id
+                workspace_id = authenticator.identity.workspace_id
+            if isinstance(exc, QueryWorkspaceScopeError):
+                metrics.workspace_scope_denied_total += 1
+                outcome = "workspace_scope_denied"
+                denied = exc.code == "WORKSPACE_SCOPE_DENIED"
+            else:
+                metrics.organization_scope_denied_total += 1
+                outcome = "organization_scope_denied"
+                denied = exc.code == "ORGANIZATION_SCOPE_DENIED"
+            status_code = 403 if denied else 422
+            failure = HTTPException(
+                status_code=status_code,
+                detail={"code": exc.code, "message": exc.message},
+            )
         except TimeoutError:
             metrics.failures_total += 1
             metrics.overload_rejections_total += 1
@@ -603,6 +641,8 @@ def create_snapshot_query_app(
                     partition_key=partition_key,
                     preference=query_request.preference,
                     backend=backend,
+                    organization_id=organization_id,
+                    workspace_id=workspace_id,
                 )
             )
         except Exception as exc:
@@ -689,6 +729,30 @@ def _route_result_wire(result: SnapshotQueryRouteResult) -> dict[str, object]:
             ),
         },
     }
+
+
+def _bound_caller_scope(
+    authenticator: BearerTokenAuthenticator,
+    requested_organization_id: str | None,
+    requested_workspace_id: str | None,
+) -> tuple[str | None, str | None]:
+    identity = authenticator.identity
+    if identity is None:
+        if requested_organization_id is not None:
+            raise QueryOrganizationScopeError(
+                "ORGANIZATION_SCOPE_NOT_BOUND",
+                "this credential is not bound to an organization",
+            )
+        if requested_workspace_id is not None:
+            raise QueryWorkspaceScopeError(
+                "WORKSPACE_SCOPE_NOT_BOUND",
+                "this credential is not bound to a workspace",
+            )
+        return None, None
+    return (
+        require_organization_scope(identity, requested_organization_id),
+        require_workspace_scope(identity, requested_workspace_id),
+    )
 
 
 def _positive_int(value: object, *, field: str) -> int:

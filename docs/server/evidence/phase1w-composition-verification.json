@@ -1,0 +1,60 @@
+{
+  "schema_version": "candlescope.server-phase1w-composition-verification.v1",
+  "captured_at_utc": "2026-08-24T09:22:54Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1w-data-plane-composition-check",
+  "phase1w_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "runtime_supported_for_server": false,
+    "composition_check_connects_to_infrastructure": false,
+    "twenty_four_hour_public_continuity": false,
+    "replay_service_composition_changed": false
+  },
+  "composition": {
+    "schema_version": "candlescope.server-data-plane-composition.v1",
+    "roles": [
+      "collector",
+      "clickhouse_writer",
+      "parquet_archiver",
+      "snapshot_query"
+    ],
+    "cross_checks": [
+      "kafka_bootstrap_servers",
+      "clickhouse_url",
+      "s3_endpoint_url",
+      "s3_bucket",
+      "optional_loopback_health_binds"
+    ],
+    "fastapi_unlock_blockers": [
+      "twenty_four_hour_public_continuity",
+      "api_gateway_identity_and_tenancy",
+      "replay_worker_pool",
+      "fastapi_must_not_boot_sqlite_control_or_market_paths"
+    ]
+  },
+  "gates": [
+    {
+      "name": "Phase 1W composition completeness, drift, health-bind, CLI, and FastAPI still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1w_composition.py -q",
+      "result": "4 passed"
+    },
+    {
+      "name": "Phase 0 profile contracts including FastAPI startup rejection",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase0_contracts.py -q",
+      "result": "passed with contract-only server profile rejection"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/deployment/profile.py backend/app/server_runtime/composition.py backend/scripts/server_composition_check.py backend/tests/test_server_phase1w_composition.py && uvx ruff@0.16.2 format --check backend/app/deployment/profile.py backend/app/server_runtime/composition.py backend/scripts/server_composition_check.py backend/tests/test_server_phase1w_composition.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "CANDLESCOPE_PROFILE=server can start the FastAPI app",
+    "composition check proves live Kafka/PostgreSQL/ClickHouse/S3 connectivity",
+    "Binance public 24 hour continuity has passed",
+    "ReplayService now consumes server snapshots"
+  ]
+}

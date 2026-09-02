@@ -1,0 +1,57 @@
+{
+  "schema_version": "candlescope.server-phase1s-process-restart-verification.v1",
+  "captured_at_utc": "2026-08-24T07:40:23Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1s-process-restart-chain-gate",
+  "phase1s_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "twenty_four_hour_public_continuity": false,
+    "collector_process_included": false,
+    "collector_stand_in": "scripted_kafka_publisher",
+    "replay_service_composition_changed": false
+  },
+  "infrastructure": [
+    "Redpanda v26.1.14",
+    "ClickHouse 26.3.17.56",
+    "MinIO RELEASE.2025-09-07T16-13-09Z",
+    "Phase 1D writer process worker",
+    "Phase 1E archive process worker"
+  ],
+  "real_infrastructure_gate": {
+    "published_sequences": [42, 43, 44, 45],
+    "kafka_offsets": [0, 1, 2, 3],
+    "writer_crash_before_commit_exit": 97,
+    "archiver_crash_before_commit_exit": 98,
+    "recovered_committed_next_offset": 4,
+    "clickhouse_final_sequences": [42, 43, 44, 45],
+    "archive_snapshot_version": 4,
+    "phase1q_replay_ids": [42, 43, 44, 45],
+    "reconciliation_status": "caught_up"
+  },
+  "gates": [
+    {
+      "name": "Phase 1S health-wire codec and restart-duplicate reconciliation",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1s_chain_health.py -q",
+      "result": "3 passed"
+    },
+    {
+      "name": "Phase 1S Redpanda/ClickHouse/MinIO writer and archiver crash-restart plus Phase 1Q/1R caught-up",
+      "command": "docker compose -f deploy/server/compose.phase1s.yml up -d --wait && CANDLESCOPE_PHASE1S_INTEGRATION=1 CANDLESCOPE_PHASE1S_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/integration/test_server_phase1s_process_restart.py -q",
+      "result": "1 passed in 16.22s"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/chain_health.py backend/tests/test_server_phase1s_chain_health.py backend/tests/integration/test_server_phase1s_process_restart.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/chain_health.py backend/tests/test_server_phase1s_chain_health.py backend/tests/integration/test_server_phase1s_process_restart.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Binance public 24 hour continuity has passed",
+    "Phase 1C collector leadership takeover was re-proven in this gate",
+    "a deployable soak supervisor exists",
+    "the FastAPI server profile is supported",
+    "ReplayService now consumes server snapshots"
+  ]
+}

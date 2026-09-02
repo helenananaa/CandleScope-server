@@ -6,8 +6,7 @@ from app.data_engine.storage.raw_trade_archive import RawAggTradeCursor
 
 from ..errors import ReplayDomainError, ReplayErrorCode
 from .base import SourceCursor
-from .trade_reader import PagedReplayTradeReader, ReplayTrade
-
+from .trade_reader import ReplayTrade, ReplayTradePageReader
 
 POSITIONED_TAIL_PAGE_ROWS = 64
 
@@ -15,13 +14,18 @@ POSITIONED_TAIL_PAGE_ROWS = 64
 class TradeReplaySource:
     def __init__(
         self,
-        reader: PagedReplayTradeReader,
+        reader: ReplayTradePageReader,
         *,
         time_offset_ms: int = 0,
         blind_mode: bool = False,
     ) -> None:
-        if not isinstance(reader, PagedReplayTradeReader):
-            raise TypeError("reader must be PagedReplayTradeReader")
+        if not isinstance(reader, ReplayTradePageReader) or not all(
+            hasattr(reader, name) for name in ("dataset_ref", "data_epoch", "page_rows")
+        ):
+            raise TypeError(
+                "reader must provide dataset_ref, data_epoch, page_rows, "
+                "read_page, and read_sequence_page"
+            )
         if isinstance(time_offset_ms, bool) or not isinstance(time_offset_ms, int):
             raise TypeError("time_offset_ms must be an integer")
         if not isinstance(blind_mode, bool):
@@ -55,7 +59,7 @@ class TradeReplaySource:
             if self._blind_mode
             else reference.expected_last_agg_trade_id
         )
-        return {
+        payload: dict[str, object] = {
             "schema_version": "replay-trade-source-ref.v1",
             "data_epoch": reference.data_epoch,
             "source_kind": "agg_trade",
@@ -70,6 +74,11 @@ class TradeReplaySource:
             "completeness": reference.completeness,
             "source_quality": reference.source_quality,
         }
+        snapshot_pin = getattr(self._reader, "snapshot_pin", None)
+        to_public_ref = getattr(snapshot_pin, "to_public_ref", None)
+        if callable(to_public_ref):
+            payload["server_snapshot"] = to_public_ref()
+        return payload
 
     def fork(self) -> TradeReplaySource:
         """Return an isolated O(1) cursor sharing only immutable reader/page data."""
@@ -150,9 +159,7 @@ class TradeReplaySource:
                 )
             first_actual_trade_id = origin.trades[0].first_trade_id
         actual_agg_trade_id = (
-            self._reader.dataset_ref.expected_first_agg_trade_id
-            + source_sequence
-            - 1
+            self._reader.dataset_ref.expected_first_agg_trade_id + source_sequence - 1
         )
         actual_cursor = RawAggTradeCursor(
             last_event_time_ms - self._time_offset_ms,
@@ -188,9 +195,7 @@ class TradeReplaySource:
             self._peeked_public = None
             return None
         if self._peeked_public is None:
-            self._peeked_public = self._public_trade(
-                self._page[self._page_index]
-            )
+            self._peeked_public = self._public_trade(self._page[self._page_index])
         return self._peeked_public
 
     def next(self) -> ReplayTrade | None:

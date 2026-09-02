@@ -16,6 +16,12 @@ from dataclasses import dataclass
 
 DEPLOYMENT_PROFILE_ENV = "CANDLESCOPE_PROFILE"
 SERVER_FOUNDATION_CONTRACT_VERSION = "candlescope.server-foundation.v1"
+FASTAPI_UNLOCK_BLOCKERS = (
+    "twenty_four_hour_public_continuity",
+    "api_gateway_identity_and_tenancy",
+    "replay_worker_pool",
+    "fastapi_must_not_boot_sqlite_control_or_market_paths",
+)
 
 
 class DeploymentProfile(str, enum.Enum):
@@ -76,9 +82,9 @@ class DeploymentSettings:
         if self.runtime_supported:
             return
         raise ServerRuntimeUnavailableError(
-            "CANDLESCOPE_PROFILE=server is contract-only in Server Phase 0; "
-            "Phase 1 must implement and verify the event-log, analytical-store, "
-            "and immutable-archive adapters before server startup is allowed"
+            "CANDLESCOPE_PROFILE=server is contract-only; independent "
+            "data-plane processes exist, but FastAPI server startup remains "
+            "locked: " + ", ".join(FASTAPI_UNLOCK_BLOCKERS)
         )
 
 

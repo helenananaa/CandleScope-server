@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import Protocol, runtime_checkable
 
+from app.server_runtime.query_identity import QueryCallerIdentity
+
 QUERY_AUDIT_SCHEMA_VERSION = "candlescope.query-control-audit.v2"
 
 
@@ -20,16 +22,37 @@ class QueryAuthenticationError(RuntimeError):
 class BearerTokenAuthenticator:
     """Authenticate one internal principal with constant-time token comparison."""
 
-    def __init__(self, *, token: str, principal: str) -> None:
+    def __init__(
+        self,
+        *,
+        token: str,
+        principal: str,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> None:
         token = _required_text(token, field="token")
         if len(token) < 32:
             raise ValueError("token must contain at least 32 characters")
         self._token = token
         self._principal = _required_text(principal, field="principal")
+        if organization_id is None and workspace_id is None:
+            self._identity: QueryCallerIdentity | None = None
+        elif organization_id is None or workspace_id is None:
+            raise ValueError("organization_id and workspace_id must be bound together")
+        else:
+            self._identity = QueryCallerIdentity(
+                principal=self._principal,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+            )
 
     @property
     def principal(self) -> str:
         return self._principal
+
+    @property
+    def identity(self) -> QueryCallerIdentity | None:
+        return self._identity
 
     def authenticate(self, credential: object) -> str:
         if not isinstance(credential, str) or not secrets.compare_digest(
@@ -56,6 +79,8 @@ class QueryAuditEvent:
     backend: str | None = None
     control_generation: int | None = None
     reason_code: str | None = None
+    organization_id: str | None = None
+    workspace_id: str | None = None
     event_id: str = dataclass_field(default_factory=lambda: str(uuid.uuid4()))
     schema_version: str = QUERY_AUDIT_SCHEMA_VERSION
 
@@ -78,7 +103,14 @@ class QueryAuditEvent:
             object.__setattr__(self, field, value)
         if not 100 <= self.status_code <= 599:
             raise ValueError("status_code must be a valid HTTP status")
-        for field in ("principal", "partition_key", "preference", "backend"):
+        for field in (
+            "principal",
+            "partition_key",
+            "preference",
+            "backend",
+            "organization_id",
+            "workspace_id",
+        ):
             value = getattr(self, field)
             if value is not None:
                 object.__setattr__(self, field, _required_text(value, field=field))
@@ -142,6 +174,8 @@ class QueryAuditEvent:
                 else str(self.control_generation)
             ),
             "reason_code": self.reason_code,
+            "organization_id": self.organization_id,
+            "workspace_id": self.workspace_id,
         }
 
 

@@ -2,7 +2,12 @@
 
 from .bar_source import BarReplaySource
 from .base import ReplayMarketSource, SourceCursor
-from .trade_reader import PagedReplayTradeReader, ReplayTrade, ReplayTradePage
+from .trade_reader import (
+    PagedReplayTradeReader,
+    ReplayTrade,
+    ReplayTradePage,
+    ReplayTradePageReader,
+)
 from .trade_source import TradeReplaySource
 
 __all__ = [
@@ -11,6 +16,7 @@ __all__ = [
     "ReplayMarketSource",
     "ReplayTrade",
     "ReplayTradePage",
+    "ReplayTradePageReader",
     "SourceCursor",
     "TradeReplaySource",
 ]

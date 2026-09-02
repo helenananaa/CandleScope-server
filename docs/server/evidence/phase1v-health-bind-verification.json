@@ -1,0 +1,49 @@
+{
+  "schema_version": "candlescope.server-phase1v-health-bind-verification.v1",
+  "captured_at_utc": "2026-08-24T08:15:44Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1v-role-health-bind",
+  "phase1v_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "health_http_enabled_by_default": false,
+    "non_loopback_bind_allowed": false,
+    "twenty_four_hour_public_continuity": false,
+    "replay_service_composition_changed": false
+  },
+  "bind_contract": {
+    "cli_flag": "--health-bind",
+    "form": "HOST:PORT",
+    "allowed_hosts": ["127.0.0.1", "localhost", "::1"],
+    "collector_env": "CANDLESCOPE_SERVER_COLLECTOR_HEALTH_BIND",
+    "writer_env": "CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_HEALTH_BIND",
+    "archiver_env": "CANDLESCOPE_SERVER_ARCHIVE_WRITER_HEALTH_BIND",
+    "inner_log_observer_preserved": true,
+    "health_body": "exact role to_wire JSON"
+  },
+  "gates": [
+    {
+      "name": "Phase 1V bind parser, observer chaining, supervisor scrape, and production entrypoint wiring",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1v_health_bind.py -q",
+      "result": "7 passed"
+    },
+    {
+      "name": "Phase 1U soak supervisor regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1u_soak_supervisor.py -q",
+      "result": "8 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/health_http.py backend/scripts/server_agg_trade_collector.py backend/scripts/server_clickhouse_writer.py backend/scripts/server_parquet_archiver.py backend/tests/test_server_phase1v_health_bind.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/health_http.py backend/scripts/server_agg_trade_collector.py backend/scripts/server_clickhouse_writer.py backend/scripts/server_parquet_archiver.py backend/tests/test_server_phase1v_health_bind.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "health HTTP is enabled in default production startup",
+    "Phase 1C/1D/1E test process workers expose --health-bind",
+    "Binance public 24 hour continuity has passed",
+    "the FastAPI server profile is supported",
+    "ReplayService now consumes server snapshots"
+  ]
+}

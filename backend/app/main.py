@@ -14,6 +14,7 @@ Startup sequence:
 When DataManager fails to initialize, the application can still expose
 health endpoints, but data APIs report explicit service-unavailable errors.
 """
+
 import asyncio
 import logging
 import os
@@ -74,7 +75,7 @@ from app.core.config import (
 from app.core.executors import executors_snapshot
 from app.core.runtime_metrics import EventLoopLagMonitor, ws_runtime_metrics
 from app.data_engine.data_manager.capacity import build_capacity_snapshot
-from app.deployment import load_deployment_settings
+from app.deployment import load_deployment_settings, refuse_server_sqlite_boot
 from app.plugin_core_v2 import create_core_plugin_router
 from app.data_engine.storage import (
     init_klines_storage,
@@ -140,6 +141,7 @@ async def _init_data_manager() -> None:
         TradeFlowConfigurationError,
         start_data_engine,
     )
+
     try:
         from app.alerts.facade import AlertFacade
         from app.alerts.runtime import AlertRuntimeEngine
@@ -221,6 +223,7 @@ async def startup_event() -> None:
     """Application startup handler."""
     deployment_settings = load_deployment_settings()
     deployment_settings.require_runtime_support()
+    refuse_server_sqlite_boot(deployment_settings)
     app.state.deployment_profile = deployment_settings.profile.value
     app.state.deployment_contract_version = deployment_settings.contract_version
 

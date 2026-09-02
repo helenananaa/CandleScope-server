@@ -1,0 +1,71 @@
+{
+  "schema_version": "candlescope.server-phase1z-fastapi-sqlite-boot-verification.v1",
+  "captured_at_utc": "2026-08-24T13:29:13Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1z-fastapi-sqlite-boot-inventory",
+  "phase1z_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "runtime_supported_for_server": false,
+    "sqlite_control_or_market_paths_profile_gated": false,
+    "server_boot_allowed_with_sqlite_inventory": false,
+    "klines_or_replay_migrated_off_sqlite": false
+  },
+  "sqlite_boot_inventory": {
+    "schema_version": "candlescope.fastapi-sqlite-boot-inventory.v1",
+    "blocker": "fastapi_must_not_boot_sqlite_control_or_market_paths",
+    "server_boot_allowed": false,
+    "profile_gated": false,
+    "paths": [
+      {
+        "role": "control",
+        "initializer": "init_klines_storage",
+        "module": "app.main"
+      },
+      {
+        "role": "market",
+        "initializer": "init_market_metrics_storage",
+        "module": "app.main"
+      },
+      {
+        "role": "market",
+        "initializer": "init_trade_flow_storage",
+        "module": "app.main"
+      },
+      {
+        "role": "market",
+        "initializer": "init_liquidation_storage",
+        "module": "app.main"
+      },
+      {
+        "role": "replay",
+        "initializer": "ReplaySQLiteStore",
+        "module": "app.replay.runtime"
+      }
+    ]
+  },
+  "gates": [
+    {
+      "name": "Phase 1Z SQLite boot inventory, second guard after skipped runtime_support, startup AST order, replay default store, and FastAPI still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1z_fastapi_sqlite_boot.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1W composition and Phase 0 profile contract regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1w_composition.py backend/tests/test_server_phase0_contracts.py -q",
+      "result": "38 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/deployment/fastapi_sqlite_boot.py backend/app/deployment/__init__.py backend/app/server_runtime/composition.py backend/tests/test_server_phase1z_fastapi_sqlite_boot.py && uvx ruff@0.16.2 format --check backend/app/deployment/fastapi_sqlite_boot.py backend/app/deployment/__init__.py backend/app/server_runtime/composition.py backend/tests/test_server_phase1z_fastapi_sqlite_boot.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "CANDLESCOPE_PROFILE=server can start FastAPI",
+    "klines, trade flow, liquidation, or replay control stores moved off SQLite",
+    "every sqlite3.connect in the repository is inventoried",
+    "twenty-four-hour public continuity, API gateway tenancy, or replay worker pool exists"
+  ]
+}

@@ -13,6 +13,11 @@ from app.server_runtime.archive_health import ArchiveWriterHealth
 from app.server_runtime.archive_service import ArchiveWriterService
 from app.server_runtime.archive_settings import ArchiveWriterSettings
 from app.server_runtime.consumers import KafkaMarketEventBatchConsumer
+from app.server_runtime.health_http import (
+    HealthObserver,
+    add_health_bind_argument,
+    run_with_health_bind,
+)
 from app.server_runtime.storage.parquet_archive import (
     ImmutableParquetMarketEventArchive,
 )
@@ -39,30 +44,38 @@ def _store(settings: ArchiveWriterSettings) -> S3ImmutableObjectStore:
     )
 
 
-async def _run_writer(settings: ArchiveWriterSettings) -> None:
+async def _run_writer(
+    settings: ArchiveWriterSettings,
+    *,
+    health_bind: str | None = None,
+) -> None:
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
-    archive = ImmutableParquetMarketEventArchive(
-        object_store=_store(settings),
-        segment_event_count=settings.segment_event_count,
-    )
-    consumer = KafkaMarketEventBatchConsumer(
-        bootstrap_servers=settings.kafka_bootstrap_servers,
-        group_id=settings.kafka_group_id,
-        client_id=f"{settings.owner_id}-phase1e",
-        exact_batch_size=settings.segment_event_count,
-        connection_options={
-            "session_timeout_ms": settings.kafka_session_timeout_ms,
-            "heartbeat_interval_ms": settings.kafka_heartbeat_interval_ms,
-        },
-    )
-    service = ArchiveWriterService(
-        settings=settings,
-        consumer=consumer,
-        archive=archive,
-        on_health=_log_health,
-    )
-    await service.run(stop_event)
+
+    async def run(on_health: HealthObserver) -> None:
+        archive = ImmutableParquetMarketEventArchive(
+            object_store=_store(settings),
+            segment_event_count=settings.segment_event_count,
+        )
+        consumer = KafkaMarketEventBatchConsumer(
+            bootstrap_servers=settings.kafka_bootstrap_servers,
+            group_id=settings.kafka_group_id,
+            client_id=f"{settings.owner_id}-phase1e",
+            exact_batch_size=settings.segment_event_count,
+            connection_options={
+                "session_timeout_ms": settings.kafka_session_timeout_ms,
+                "heartbeat_interval_ms": settings.kafka_heartbeat_interval_ms,
+            },
+        )
+        service = ArchiveWriterService(
+            settings=settings,
+            consumer=consumer,
+            archive=archive,
+            on_health=on_health,
+        )
+        await service.run(stop_event)
+
+    await run_with_health_bind(health_bind, _log_health, run)
 
 
 async def _init_bucket(settings: ArchiveWriterSettings) -> None:
@@ -91,16 +104,20 @@ def main() -> None:
         choices=("init-bucket", "run"),
         help="initialize the configured bucket or run the archive writer",
     )
+    add_health_bind_argument(
+        parser,
+        env_name="CANDLESCOPE_SERVER_ARCHIVE_WRITER_HEALTH_BIND",
+    )
     logging.basicConfig(
         level=os.environ.get("CANDLESCOPE_LOG_LEVEL", "INFO").upper(),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+    args = parser.parse_args()
     settings = ArchiveWriterSettings.from_env()
-    command = parser.parse_args().command
-    if command == "init-bucket":
+    if args.command == "init-bucket":
         asyncio.run(_init_bucket(settings))
     else:
-        asyncio.run(_run_writer(settings))
+        asyncio.run(_run_writer(settings, health_bind=args.health_bind))
 
 
 if __name__ == "__main__":

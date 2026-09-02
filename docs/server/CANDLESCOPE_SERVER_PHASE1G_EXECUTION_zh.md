@@ -2,6 +2,8 @@
 
 状态：INTERNAL_QUERY_HARDENING_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1X/1Y 已把可选的服务端组织与工作区范围加到同一内部 bearer 上，且必须成对绑定；两者都未绑定时 1G 行为保持不变。当前范围合同以 `CANDLESCOPE_SERVER_PHASE1Y_EXECUTION_zh.md` 为准。1G 关于“不是最终用户/组织授权”的判断对完整租户模型仍然成立。
+
 Phase 1G 加固 Phase 1F 的独立快照查询进程，但仍不解除主 FastAPI `server` Profile：
 
     internal API gateway

@@ -1,0 +1,52 @@
+{
+  "schema_version": "candlescope.server-phase1ab-replay-lease-postgres-verification.v1",
+  "captured_at_utc": "2026-08-24T14:07:49Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1ab-replay-session-lease-directory",
+  "phase1ab_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "replay_worker_pool_delivered": false,
+    "replay_service_or_actor_wired": false,
+    "live_postgres_integration_run": false
+  },
+  "lease_contract": {
+    "schema_version": "candlescope.replay-session-lease.v2",
+    "table": "candlescope_replay_session_lease",
+    "snapshot_pin_inherited": true,
+    "organization_workspace_pin_inherited": true,
+    "takeover_may_rebind_tenant": false,
+    "advisory_lock_namespace": "replay-session:",
+    "select_for_update": true,
+    "dsn_redacted_from_repr": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1AB PostgreSQL schema, DSN redaction, tenant pin, and FastAPI still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1ab_replay_lease_postgres.py -q",
+      "result": "4 passed"
+    },
+    {
+      "name": "Phase 1AA fencing contract still holds with required tenant pin",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1aa_replay_lease.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1Y organization/workspace identity regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1y_query_workspace.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_lease.py backend/app/server_runtime/testing/in_memory_replay_lease_store.py backend/app/server_runtime/storage/postgres_replay_lease.py backend/app/server_runtime/storage/__init__.py backend/tests/test_server_phase1aa_replay_lease.py backend/tests/test_server_phase1ab_replay_lease_postgres.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/replay_lease.py backend/app/server_runtime/testing/in_memory_replay_lease_store.py backend/app/server_runtime/storage/postgres_replay_lease.py backend/app/server_runtime/storage/__init__.py backend/tests/test_server_phase1aa_replay_lease.py backend/tests/test_server_phase1ab_replay_lease_postgres.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Replay Worker process pool exists",
+    "ReplayService or Actor uses the lease",
+    "live PostgreSQL fencing was executed in this gate",
+    "CANDLESCOPE_PROFILE=server can start FastAPI"
+  ]
+}

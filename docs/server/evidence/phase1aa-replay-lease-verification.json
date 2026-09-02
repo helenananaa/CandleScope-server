@@ -1,0 +1,54 @@
+{
+  "schema_version": "candlescope.server-phase1aa-replay-lease-verification.v1",
+  "captured_at_utc": "2026-08-24T13:52:19Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1aa-replay-session-lease",
+  "phase1aa_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "replay_worker_pool_delivered": false,
+    "replay_service_or_actor_wired": false,
+    "postgresql_session_directory_delivered": false,
+    "lease_store_claims_durability": false
+  },
+  "lease_contract": {
+    "schema_version": "candlescope.replay-session-lease.v1",
+    "exclusive_while_unexpired": true,
+    "first_fencing_epoch": 0,
+    "takeover_increments_epoch": true,
+    "snapshot_pin_inherited": true,
+    "snapshot_rebind_on_takeover_allowed": false,
+    "stale_token_fenced": true,
+    "public_ref_includes_lease_token": false,
+    "wildcard_session_or_worker_allowed": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1AA exclusive session lease, snapshot pin inheritance, stale fence, and FastAPI still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1aa_replay_lease.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1Q snapshot replay adapter regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1q_replay_snapshot.py -q",
+      "result": "10 passed"
+    },
+    {
+      "name": "Phase 1Z FastAPI SQLite boot inventory still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1z_fastapi_sqlite_boot.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_lease.py backend/app/server_runtime/testing/in_memory_replay_lease_store.py backend/app/server_runtime/testing/__init__.py backend/tests/test_server_phase1aa_replay_lease.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/replay_lease.py backend/app/server_runtime/testing/in_memory_replay_lease_store.py backend/app/server_runtime/testing/__init__.py backend/tests/test_server_phase1aa_replay_lease.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Replay Worker process pool exists",
+    "PostgreSQL stores replay session leases",
+    "ReplayService or Actor uses the lease",
+    "CANDLESCOPE_PROFILE=server can start FastAPI"
+  ]
+}

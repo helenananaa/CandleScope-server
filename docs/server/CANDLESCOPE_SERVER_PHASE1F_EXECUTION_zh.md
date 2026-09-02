@@ -2,6 +2,8 @@
 
 状态：SNAPSHOT_QUERY_PROOF_BOUNDARY_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1Q 已把冷端 `MarketEventQuery` 接到现有 `TradeReplaySource`，作为 Phase 0 纵向链路的“一个现有回放读取入口”。本文件第 6 节关于“Replay Worker snapshot adapter”的描述仅代表 Phase 1F 当时边界；当前读取适配边界以 `CANDLESCOPE_SERVER_PHASE1Q_EXECUTION_zh.md` 为准。1Q 仍不是 Replay Worker、WebSocket fan-out 或可部署 server Profile。
+
 Phase 1F 在 Phase 1D ClickHouse 事实投影和 Phase 1E 不可变 Parquet 快照之上增加一个独立 HTTP 查询进程：
 
     MarketDataSnapshotRef + stream + time range + cursor

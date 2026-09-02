@@ -1,0 +1,57 @@
+{
+  "schema_version": "candlescope.server-phase1y-query-workspace-verification.v1",
+  "captured_at_utc": "2026-08-24T13:09:33Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1y-workspace-scoped-query-identity",
+  "phase1y_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "full_tenancy_or_oidc_delivered": false,
+    "client_may_self_assert_organization": false,
+    "client_may_self_assert_workspace": false,
+    "wildcard_organization_allowed": false,
+    "wildcard_workspace_allowed": false,
+    "organization_only_credential_allowed": false,
+    "control_token_organization_or_workspace_scoped": false
+  },
+  "identity_contract": {
+    "schema_version": "candlescope.query-caller-identity.v2",
+    "token_bound_fields": ["principal", "organization_id", "workspace_id"],
+    "organization_and_workspace_bound_together": true,
+    "missing_workspace_status": 422,
+    "mismatch_status": 403,
+    "unscoped_self_assert_status": 422,
+    "audit_includes_organization_id": true,
+    "audit_includes_workspace_id": true,
+    "audit_includes_bearer_token": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1Y workspace identity, together-bind, request matching, unscoped self-assert denial, and FastAPI still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1y_query_workspace.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1X organization identity still holds with required workspace",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1x_query_identity.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1G/1F/1H query hardening regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1g_query_hardening.py backend/tests/test_server_phase1f_snapshot_query.py backend/tests/test_server_phase1h_query_control.py -q",
+      "result": "13 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/query_identity.py backend/app/server_runtime/query_security.py backend/app/server_runtime/query_settings.py backend/app/server_runtime/query_api.py backend/scripts/server_snapshot_query.py backend/tests/test_server_phase1x_query_identity.py backend/tests/test_server_phase1y_query_workspace.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/query_identity.py backend/app/server_runtime/query_security.py backend/app/server_runtime/query_settings.py backend/app/server_runtime/query_api.py backend/scripts/server_snapshot_query.py backend/tests/test_server_phase1x_query_identity.py backend/tests/test_server_phase1y_query_workspace.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "user or team RBAC exists",
+    "OIDC or mTLS is configured",
+    "CANDLESCOPE_PROFILE=server can start FastAPI",
+    "organization or workspace directory is stored in PostgreSQL"
+  ]
+}

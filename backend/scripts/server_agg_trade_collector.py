@@ -11,6 +11,11 @@ import signal
 
 from app.server_runtime import AggTradeCollectorService, ServerCollectorSettings
 from app.server_runtime.health import CollectorHealth
+from app.server_runtime.health_http import (
+    HealthObserver,
+    add_health_bind_argument,
+    run_with_health_bind,
+)
 from app.server_runtime.publishers import KafkaMarketEventPublisher
 from app.server_runtime.sources import BinanceAggTradeEventSource
 from app.server_runtime.storage import PostgresStreamLeaseStore
@@ -22,20 +27,28 @@ async def _log_health(health: CollectorHealth) -> None:
     logger.info("collector_health=%s", json.dumps(health.to_wire(), sort_keys=True))
 
 
-async def _run_collector(settings: ServerCollectorSettings) -> None:
+async def _run_collector(
+    settings: ServerCollectorSettings,
+    *,
+    health_bind: str | None = None,
+) -> None:
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
-    service = AggTradeCollectorService(
-        settings=settings,
-        lease_store=PostgresStreamLeaseStore(settings.postgres_dsn),
-        publisher=KafkaMarketEventPublisher(
-            bootstrap_servers=settings.kafka_bootstrap_servers,
-            client_id=f"{settings.owner_id}-phase1c",
-        ),
-        source=BinanceAggTradeEventSource(),
-        on_health=_log_health,
-    )
-    await service.run(stop_event)
+
+    async def run(on_health: HealthObserver) -> None:
+        service = AggTradeCollectorService(
+            settings=settings,
+            lease_store=PostgresStreamLeaseStore(settings.postgres_dsn),
+            publisher=KafkaMarketEventPublisher(
+                bootstrap_servers=settings.kafka_bootstrap_servers,
+                client_id=f"{settings.owner_id}-phase1c",
+            ),
+            source=BinanceAggTradeEventSource(),
+            on_health=on_health,
+        )
+        await service.run(stop_event)
+
+    await run_with_health_bind(health_bind, _log_health, run)
 
 
 async def _init_schema(dsn: str) -> None:
@@ -60,7 +73,13 @@ def main() -> None:
         description="CandleScope Phase 1C aggregate-trade collector",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("run", help="run the always-on collector from env")
+    run_parser = subparsers.add_parser(
+        "run", help="run the always-on collector from env"
+    )
+    add_health_bind_argument(
+        run_parser,
+        env_name="CANDLESCOPE_SERVER_COLLECTOR_HEALTH_BIND",
+    )
     init_parser = subparsers.add_parser(
         "init-schema",
         help="idempotently create the PostgreSQL lease table",
@@ -82,7 +101,12 @@ def main() -> None:
             )
         asyncio.run(_init_schema(args.postgres_dsn))
     else:
-        asyncio.run(_run_collector(ServerCollectorSettings.from_env()))
+        asyncio.run(
+            _run_collector(
+                ServerCollectorSettings.from_env(),
+                health_bind=getattr(args, "health_bind", None),
+            )
+        )
 
 
 if __name__ == "__main__":

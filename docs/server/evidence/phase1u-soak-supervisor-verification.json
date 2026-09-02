@@ -1,0 +1,51 @@
+{
+  "schema_version": "candlescope.server-phase1u-soak-supervisor-verification.v1",
+  "captured_at_utc": "2026-08-24T07:59:28Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1u-bounded-soak-supervisor",
+  "phase1u_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "twenty_four_hour_public_continuity": false,
+    "binance_collectors_started": false,
+    "production_role_http_health_enabled_by_default": false,
+    "replay_service_composition_changed": false
+  },
+  "supervisor": {
+    "schema_version": "candlescope.server-phase1u-soak-result.v1",
+    "bind": "loopback_only",
+    "health_path": "/health",
+    "default_source": "scripted",
+    "default_duration_ms": 5000,
+    "max_scripted_duration_ms": 300000,
+    "redirects_forbidden": true,
+    "environment_proxy_ignored": true,
+    "stale_health_fail_closed": true,
+    "quiet_checkpoint_requires_caught_up": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1U loopback health HTTP, scrape policy, stale fail-closed, and public-24h refusal",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1u_soak_supervisor.py -q",
+      "result": "8 passed"
+    },
+    {
+      "name": "Phase 1R soak rehearsal regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1r_soak.py -q",
+      "result": "9 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/health_http.py backend/app/server_runtime/soak_supervisor.py backend/scripts/server_phase1u_soak_supervisor.py backend/tests/test_server_phase1u_soak_supervisor.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/health_http.py backend/app/server_runtime/soak_supervisor.py backend/scripts/server_phase1u_soak_supervisor.py backend/tests/test_server_phase1u_soak_supervisor.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Binance public 24 hour continuity has passed",
+    "collector/writer/archiver production entrypoints now serve health HTTP by default",
+    "the supervisor starts or crash-injects those processes",
+    "the FastAPI server profile is supported",
+    "ReplayService now consumes server snapshots"
+  ]
+}

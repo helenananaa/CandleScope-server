@@ -17,12 +17,12 @@ from app.server_runtime.query_settings import QueryServiceSettings
 from app.server_runtime.storage.clickhouse_query import (
     ClickHouseSnapshotMarketEventQuery,
 )
-from app.server_runtime.storage.postgres_query_control import (
-    PostgresQueryControlStore,
-)
 from app.server_runtime.storage.parquet_archive import (
     ImmutableParquetMarketEventArchive,
     ParquetMarketEventQuery,
+)
+from app.server_runtime.storage.postgres_query_control import (
+    PostgresQueryControlStore,
 )
 from app.server_runtime.storage.s3 import S3ImmutableObjectStore
 
@@ -94,6 +94,8 @@ def build_app(settings: QueryServiceSettings):
         authenticator=BearerTokenAuthenticator(
             token=settings.auth_bearer_token,
             principal=settings.auth_principal,
+            organization_id=settings.auth_organization_id,
+            workspace_id=settings.auth_workspace_id,
         ),
         audit_sink=audit_sink,
         control_authenticator=control_authenticator,

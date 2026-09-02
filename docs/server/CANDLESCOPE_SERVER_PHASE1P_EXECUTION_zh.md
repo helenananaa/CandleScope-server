@@ -2,6 +2,8 @@
 
 状态：QUERY_BACKUP_CADENCE_MONITOR_COMPLETE_NOT_DEPLOYABLE
 
+后续状态：Phase 1Q 不再延伸备份/cadence 控制面，而是回到 Phase 0 纵向链路，把冷端快照查询接到现有回放成交读取入口。备份模板安装、真实值班送达和 72 小时 cadence 观察仍是部署责任；当前产品读取边界以 `CANDLESCOPE_SERVER_PHASE1Q_EXECUTION_zh.md` 为准。
+
 Phase 1P 延续外部 systemd 调度和独立查询进程；主 FastAPI `server` Profile 仍保持 fail closed。它把 Phase 1O 只能由调用方手工提供 history URI 的 cadence verifier 接到一个主机私有引用目录，并提供独立 hourly monitor 与 HMAC HTTPS webhook 传输合同。
 
 ```text

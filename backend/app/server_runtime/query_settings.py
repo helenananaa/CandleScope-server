@@ -7,6 +7,10 @@ import secrets
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from app.server_runtime.query_identity import (
+    normalize_organization_id,
+    normalize_workspace_id,
+)
 from app.server_runtime.writer_settings import DEFAULT_GROUP_ID
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_QUERY_"
@@ -34,6 +38,8 @@ class QueryServiceSettings:
     clickhouse_database: str = "candlescope"
     clickhouse_writer_group_id: str = DEFAULT_GROUP_ID
     auth_principal: str = "candlescope-api-gateway"
+    auth_organization_id: str | None = None
+    auth_workspace_id: str | None = None
     control_principal: str = "candlescope-query-operator"
     hot_backend_id: str = "clickhouse-market-events-v1"
     s3_region: str = "us-east-1"
@@ -93,6 +99,24 @@ class QueryServiceSettings:
                 name,
                 _required_text(getattr(self, name), field=name),
             )
+        if (self.auth_organization_id is None) != (self.auth_workspace_id is None):
+            raise QueryServiceConfigurationError(
+                "auth_organization_id and auth_workspace_id must be set together"
+            )
+        if self.auth_organization_id is not None:
+            try:
+                object.__setattr__(
+                    self,
+                    "auth_organization_id",
+                    normalize_organization_id(self.auth_organization_id),
+                )
+                object.__setattr__(
+                    self,
+                    "auth_workspace_id",
+                    normalize_workspace_id(self.auth_workspace_id),
+                )
+            except ValueError as exc:
+                raise QueryServiceConfigurationError(str(exc)) from exc
         token = _required_text(self.auth_bearer_token, field="auth_bearer_token")
         if len(token) < 32:
             raise QueryServiceConfigurationError(
@@ -189,6 +213,8 @@ class QueryServiceSettings:
             s3_access_key_id=_required_env(values, "S3_ACCESS_KEY_ID"),
             s3_secret_access_key=_required_env(values, "S3_SECRET_ACCESS_KEY"),
             auth_bearer_token=_required_env(values, "AUTH_BEARER_TOKEN"),
+            auth_organization_id=_optional_env(values, "AUTH_ORGANIZATION_ID"),
+            auth_workspace_id=_optional_env(values, "AUTH_WORKSPACE_ID"),
             postgres_dsn=_optional_env(values, "POSTGRES_DSN"),
             control_bearer_token=_optional_env(values, "CONTROL_BEARER_TOKEN"),
             instance_id=_required_env(values, "INSTANCE_ID"),

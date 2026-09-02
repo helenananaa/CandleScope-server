@@ -1,0 +1,61 @@
+{
+  "schema_version": "candlescope.server-phase1t-collector-takeover-verification.v1",
+  "captured_at_utc": "2026-08-24T07:48:38Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1t-collector-takeover-chain-gate",
+  "phase1t_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "twenty_four_hour_public_continuity": false,
+    "collector_process_included": true,
+    "collector_source": "scripted_span_after_leadership",
+    "replay_service_composition_changed": false
+  },
+  "infrastructure": [
+    "Redpanda v26.1.14",
+    "PostgreSQL 18.4-bookworm",
+    "ClickHouse 26.3.17.56",
+    "MinIO RELEASE.2025-09-07T16-13-09Z",
+    "Phase 1C AggTradeCollectorService with PostgreSQL lease",
+    "Phase 1D writer process worker",
+    "Phase 1E archive process worker"
+  ],
+  "real_infrastructure_gate": {
+    "leader_span": [42, 43],
+    "takeover_span": [44, 45],
+    "takeover_producer_epoch": 1,
+    "collector_last_partition_offset": 3,
+    "writer_crash_before_commit_exit": 97,
+    "archiver_crash_before_commit_exit": 98,
+    "recovered_committed_next_offset": 4,
+    "clickhouse_final_sequences": [42, 43, 44, 45],
+    "archive_snapshot_version": 4,
+    "phase1q_replay_ids": [42, 43, 44, 45],
+    "reconciliation_status": "caught_up",
+    "collector_health_source": "takeover_leader_wire"
+  },
+  "gates": [
+    {
+      "name": "Phase 1T scripted span parser and takeover health reconciliation",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1t_collector_span.py -q",
+      "result": "3 passed"
+    },
+    {
+      "name": "Phase 1T collector SIGKILL takeover plus writer/archiver crash-restart and Phase 1Q/1R caught-up",
+      "command": "docker compose -f deploy/server/compose.phase1t.yml up -d --wait && CANDLESCOPE_PHASE1T_INTEGRATION=1 CANDLESCOPE_PHASE1T_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/integration/test_server_phase1t_collector_takeover.py -q",
+      "result": "1 passed in 17.36s"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/scripts/server_phase1t_collector_worker.py backend/tests/test_server_phase1t_collector_span.py backend/tests/integration/test_server_phase1t_collector_takeover.py && uvx ruff@0.16.2 format --check backend/scripts/server_phase1t_collector_worker.py backend/tests/test_server_phase1t_collector_span.py backend/tests/integration/test_server_phase1t_collector_takeover.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Binance public 24 hour continuity has passed",
+    "a deployable soak supervisor exists",
+    "the FastAPI server profile is supported",
+    "ReplayService now consumes server snapshots"
+  ]
+}

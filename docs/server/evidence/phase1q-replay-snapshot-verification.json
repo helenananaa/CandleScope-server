@@ -1,0 +1,77 @@
+{
+  "schema_version": "candlescope.server-phase1q-replay-snapshot-verification.v1",
+  "captured_at_utc": "2026-08-24T06:52:20Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1q-replay-snapshot-read-boundary",
+  "phase1q_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "replay_service_composition_changed": false,
+    "replay_worker_pool_added": false,
+    "websocket_fanout_added": false,
+    "hot_clickhouse_used": false,
+    "latest_snapshot_selection": false,
+    "live_market_fallback": false,
+    "personal_raw_agg_trade_archive_used": false
+  },
+  "frozen_stream": {
+    "exchange": "binance",
+    "market_type": "futures",
+    "symbol": "BTCUSDT",
+    "channel": "agg_trade",
+    "partition_key": "binance:futures:BTCUSDT@agg_trade",
+    "payload_schema": "binance.agg-trade.normalized.v1"
+  },
+  "read_contract": {
+    "pin_schema": "candlescope.replay-server-snapshot.v1",
+    "query_port": "MarketEventQuery",
+    "query_preference": null,
+    "authority": "cold immutable snapshot pages",
+    "materialization": "bounded eager first-fact freeze then sync ReplayTradePageReader",
+    "replay_entry": "existing TradeReplaySource",
+    "trade_source": "server_snapshot",
+    "source_quality": "server_snapshot_manifest",
+    "completeness": "exact",
+    "default_query_page_limit": 500,
+    "default_max_scan_rows": 100000,
+    "default_max_query_pages": 256,
+    "replay_package_imports_server_runtime": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1Q snapshot pin, cold pagination, TradeReplaySource binding, and fail-closed drift",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1q_replay_snapshot.py -q",
+      "result": "10 passed"
+    },
+    {
+      "name": "Existing aggregate-trade replay reader and source regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_replay_trade_source.py backend/tests/test_replay_trade_reader.py -q",
+      "result": "13 passed"
+    },
+    {
+      "name": "Phase 0 contracts and architecture",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase0_contracts.py backend/tests/test_server_phase0_architecture.py -q",
+      "result": "38 passed"
+    },
+    {
+      "name": "new and touched runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_snapshot.py backend/tests/test_server_phase1q_replay_snapshot.py backend/app/replay/sources/trade_source.py backend/app/replay/sources/__init__.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/replay_snapshot.py backend/tests/test_server_phase1q_replay_snapshot.py backend/app/replay/sources/trade_source.py backend/app/replay/sources/__init__.py",
+      "result": "passed"
+    },
+    {
+      "name": "compilation and patch hygiene",
+      "result": "compileall passed; git diff --check passed for Phase 1Q files"
+    }
+  ],
+  "claims_not_made": [
+    "ReplayService or the HTTP replay API now consume server snapshots",
+    "Replay Worker leases or multi-session scheduling exist",
+    "the FastAPI server profile is supported",
+    "WebSocket fan-out exists",
+    "24 hour public Binance continuity has passed",
+    "hot ClickHouse is a replay correctness authority",
+    "the snapshot reader is a production-capacity query path",
+    "backup systemd templates are installed or on-call delivery is proven"
+  ]
+}

@@ -116,6 +116,32 @@ Phase 1O 把每次 Phase 1M 成功的 v1 核心 receipt 放入独立的 RFC 8785
 
 Phase 1P 把 Phase 1O 的显式 URI 门禁接到一个主机私有成功引用目录和独立 systemd monitor 模板。Phase 1M 只有在远端签名历史及本机逐文件不可变引用都落盘后才报告成功；monitor 默认每小时扫描最多 4096 个私有引用，以 72 小时窗口回源验证每个 history 的 HMAC/URI/hash 后复用 30 小时 cadence 门禁。异常使用独立 key 对最小化 alert JSON 做 HMAC-SHA256 并单次 POST 到 HTTPS webhook；客户端禁用环境代理和 redirect，并限制超时与响应体。该目录没有独立签名且只代表一个调度主机的观察，因此不能证明跨主机/对象存储历史完整；模板也没有安装，真实值班渠道送达、去重、冷却、重试和 escalation 仍是部署责任。
 
+Phase 1Q 把 Phase 1F 的冷端 `MarketEventQuery` 接到现有 `TradeReplaySource`。调用方必须提供完整 `MarketDataSnapshotRef`、冻结的 `binance:futures:BTCUSDT@agg_trade` 流、事件时间窗和精确 agg_trade_id 闭区间；适配器只向冷查询分页，在有界扫描内物化首事实成交，校验身份/连续性/snapshot 绑定后，再以同步 `ReplayTradePageReader` 交给既有单写者回放源。它不选择“当前最新”快照，不读热 ClickHouse，不回退个人版 Parquet 归档或实时行情，也不打开主 FastAPI `server` Profile 或 Replay Worker 池。
+
+Phase 1R 把 Phase 0 的 24 小时硬验收写成纵向对账合同：collector 的 durable sequence/offset、ClickHouse writer 与 Parquet archive 的 committed next offset、冷查询首事实以及 Phase 1Q replay pin 必须能在安静检查点对齐到同一 snapshot。进程内存 rehearsal 发布一个完整 segment、幂等重放、冷查询并驱动既有回放源；PID 或 `ready=true` 单独不能作为成功。公网 24 小时 soak 监督器仍未交付，`public-24h` 入口 fail closed，不得写成连续性证据。
+
+Phase 1S 把该对账接到 Redpanda + ClickHouse + MinIO 上的跨进程故障门禁。脚本化 publisher 写入 4 条连续 envelope 后，Phase 1D writer 与 Phase 1E archiver 各自在 Kafka commit 前崩溃并由新进程接管；随后冷查询、Phase 1Q replay pin 与健康线必须 caught-up。Collector 单主接管仍由 Phase 1C 证明，本阶段不打开 server Profile，也不声称 24 小时公网连续性。
+
+Phase 1T 把 Phase 1C collector 进程接入同一条栈：PostgreSQL lease 上的 leader 先发布 42–43，SIGKILL 后 standby 以递增 producer epoch 发布 44–45；再复用 1S 的 writer/archiver commit-前崩溃接管，最后用接管后的 collector 健康线做 Phase 1R caught-up 对账。交易所源仍是有界脚本，不是公网 Binance。
+
+Phase 1U 增加 loopback-only 角色健康 HTTP 和有界刮取监督器：按显式 duration/interval/staleness 读取 `/health` 精确 `to_wire()` JSON，中途允许 lagging，结束必须 caught-up。默认脚本源最长 300 秒；Binance/24 小时声称仍 fail closed，监督器不启动采集进程。
+
+Phase 1V 把该 HTTP 接到三个常驻入口的可选 `--health-bind` / `CANDLESCOPE_SERVER_*_HEALTH_BIND`。未设置时不监听端口；设置后只允许 loopback HOST:PORT，并把每次 `on_health` 快照发布为精确 `to_wire()` JSON，同时保留原日志观察器。
+
+Phase 1W 增加数据平面组合检查：collector/writer/archiver/query 的环境必须能同时解析，且 Kafka bootstrap、ClickHouse URL、对象存储 endpoint/bucket 不得漂移。这不是 FastAPI server Profile 解锁；`runtime_supported` 仍仅 personal，缺少 24 小时公网连续性、接入身份、Replay Worker 以及“主应用不得走 SQLite 控制/行情路径”的组合根。
+
+Phase 1X 把独立查询进程的内部 bearer 绑到单一 `organization_id`。请求必须携带与 token 相同的组织标识，禁止通配符和客户端自报；审计记录组织而不记录 token。这仍不是用户/工作区租户模型，也不解锁 FastAPI server Profile。
+
+Phase 1Y 在同一内部 credential 上同时绑定 `workspace_id`。组织与工作区必须成对出现，禁止只绑组织（那会变成组织内通配）。请求必须同时匹配两者；未绑定的 token 不能自报 workspace。这仍不是用户/团队 RBAC、OIDC 或 FastAPI 解锁。
+
+Phase 1Z 把 FastAPI 仍会打开的 SQLite 控制/行情/回放启动路径写成冻结清单。`startup_event` 在 `require_runtime_support()` 之后增加 `refuse_server_sqlite_boot()`，因此即使误开 `runtime_supported`，server Profile 也不能静默落到 SQLite。这不是把 personal 存储迁走，也不解锁 FastAPI。
+
+Phase 1AA 为回放会话增加单写者租约：一个 `session_id` 同时只属于一个 `worker_id`，`fencing_epoch` 在接管时递增，并冻结首次 acquire 的 snapshot pin。这不是 Worker 进程池、PostgreSQL 会话目录或 FastAPI 解锁。
+
+Phase 1AB 把该租约落到 PostgreSQL 会话目录，并冻结 `organization_id`/`workspace_id`。接管不得改 snapshot 或租户 pin。这仍不是 Worker 进程池，也不解锁 FastAPI。
+
+Phase 1AC 要求冷快照回放物化必须持有未过期会话租约，且 pin 与租约 snapshot 一致；过期或改 pin 不得访问查询端口。未租约的 1Q 加载路径仍留给测试。这不是 Worker 池或 FastAPI 解锁。
+
 冷端 pruning 只能建立在不改变首事实 identity 语义的证明上；仅凭 segment 时间范围不能安全跳过同一逻辑流的历史 segment。PostgreSQL 控制面故障时，实例不得继续提供未审计的查询或操作热端；冷 Parquet 仍是数据正确性权威，但该 HTTP 服务本身应因审计/控制依赖不可用而 fail closed。审计表当前仍按完整单链和全局唯一 sequence/hash 验证；在定义分区键、跨分区唯一性、链 checkpoint、备份和法定保留要求前，不启用自动分区或删除。
 
 ### SQLite

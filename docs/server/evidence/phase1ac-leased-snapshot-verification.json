@@ -1,0 +1,50 @@
+{
+  "schema_version": "candlescope.server-phase1ac-leased-snapshot-verification.v1",
+  "captured_at_utc": "2026-08-24T15:05:53Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "9faafaad",
+  "phase": "phase1ac-leased-snapshot-replay-bind",
+  "phase1ac_passed": true,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "replay_worker_pool_delivered": false,
+    "replay_service_or_actor_wired": false,
+    "unleased_phase1q_load_removed": false
+  },
+  "bind_contract": {
+    "schema_version": "candlescope.leased-server-snapshot-replay.v1",
+    "require_active_before_query": true,
+    "expired_or_stale_queries": 0,
+    "snapshot_mismatch_queries": 0,
+    "preference_or_hot_allowed": false,
+    "public_ref_includes_lease_token": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1AC leased snapshot load, stale/mismatch query denial, unleased 1Q path remains, FastAPI still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1ac_leased_snapshot.py -q",
+      "result": "4 passed"
+    },
+    {
+      "name": "Phase 1AA session lease fencing regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1aa_replay_lease.py -q",
+      "result": "5 passed"
+    },
+    {
+      "name": "Phase 1Q snapshot replay adapter regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1q_replay_snapshot.py -q",
+      "result": "10 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_leased.py backend/app/server_runtime/replay_lease.py backend/app/server_runtime/testing/in_memory_replay_lease_store.py backend/app/server_runtime/storage/postgres_replay_lease.py backend/tests/test_server_phase1ac_leased_snapshot.py && uvx ruff@0.16.2 format --check backend/app/server_runtime/replay_leased.py backend/app/server_runtime/replay_lease.py backend/app/server_runtime/testing/in_memory_replay_lease_store.py backend/app/server_runtime/storage/postgres_replay_lease.py backend/tests/test_server_phase1ac_leased_snapshot.py",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Replay Worker process pool exists",
+    "ReplayService or Actor uses the lease",
+    "unleased ServerSnapshotTradeReader.load was removed",
+    "CANDLESCOPE_PROFILE=server can start FastAPI"
+  ]
+}

@@ -1,8 +1,11 @@
-# CandleScope
+# CandleScope Server
 
 [English](README.md)
 
-CandleScope 是基于 FastAPI、React、Vite 和 Lightweight Charts 构建的轻量级交易看盘软件。当前支持 Binance 与 OKX 行情、现货与永续市场、多模块 Data Engine、交易所感知的交易对元数据、实时 WebSocket、内置指标，以及通过 Pyne 提供的 Pine 风格 Python 指标脚本。
+这是 CandleScope 服务器 Profile 的开发仓库，与本地优先应用共用 FastAPI、React、
+Vite 和 Lightweight Charts 代码基线。CandleScope 当前支持 Binance 与 OKX 行情、
+现货与永续市场、多模块 Data Engine、交易所感知的交易对元数据、实时 WebSocket、
+内置指标，以及通过 Pyne 提供的 Pine 风格 Python 指标脚本。
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python" />
@@ -14,6 +17,7 @@ CandleScope 是基于 FastAPI、React、Vite 和 Lightweight Charts 构建的轻
 
 ## 目录
 
+- [服务器状态](#服务器状态)
 - [快速开始](#快速开始)
 - [项目能力](#项目能力)
 - [架构](#架构)
@@ -28,7 +32,33 @@ CandleScope 是基于 FastAPI、React、Vite 和 Lightweight Charts 构建的轻
 - [说明](#说明)
 - [鸣谢](#鸣谢)
 
+## 服务器状态
+
+本仓库是 CandleScope 服务器 Profile 的公开开发线，当前实现和验证证据推进到
+**Phase 1AC**。
+
+| 范围 | 当前边界 |
+|---|---|
+| Personal Profile | 继续使用 SQLite、进程内总线和本地文件，可按下方快速开始运行。 |
+| Server 数据平面 | 已有 durable event publish、ClickHouse projection、不可变 Parquet archive、冷快照查询、健康对账和组合检查合同与门禁。 |
+| Server 身份与回放 | 已实现组织/工作区绑定的查询身份、PostgreSQL 回放会话租约、fencing，以及租约保护的冷快照加载。 |
+| 生产就绪 | 尚未声称。`CANDLESCOPE_PROFILE=server` 仍然 fail closed；Replay Worker 池、调度器、HTTP replay API 和公网 24 小时连续性证明尚未完成。 |
+
+建议先阅读[服务器产品合同](docs/server/CANDLESCOPE_SERVER_PRODUCT_CONTRACT_zh.md)、
+[服务器架构](docs/server/CANDLESCOPE_SERVER_ARCHITECTURE_zh.md)和
+[Phase 1AC 执行记录](docs/server/CANDLESCOPE_SERVER_PHASE1AC_EXECUTION_zh.md)。
+机器可读的阶段证据位于 [`docs/server/evidence`](docs/server/evidence)。
+
+克隆服务器仓库：
+
+```bash
+git clone https://github.com/helenananaa/CandleScope-server.git
+```
+
 ## 快速开始
+
+> 本节命令启动的是可运行的 **personal Profile**，不会解锁 server Profile，
+> 也不会替代服务器外部基础设施门禁。
 
 环境要求：
 
@@ -306,7 +336,7 @@ runtime 不可用都会 fail closed。Phase 7 新增
 SDK、Pyne Runtime RC wheel 与 NumPy 版本，并已通过真实 `.cspkg` 离线安装和协议探针。
 0.2.0 bridge 通过可协商的结构化 Render IR 覆盖 marker、hline、fill 等输出并通过冻结
 golden。可信开发包已发布为
-[`candlescope-plugin-pyne-v0.2.0-dev.1`](https://github.com/Ryan00956/CandleScope/releases/tag/candlescope-plugin-pyne-v0.2.0-dev.1)；
+[`candlescope-plugin-pyne-v0.2.0-dev.1`](https://github.com/helenananaa/CandleScope/releases/tag/candlescope-plugin-pyne-v0.2.0-dev.1)；
 产品 bootstrap 固定其 URL、大小、平台和外层 SHA-256，通用社区安装器仍只接受本地
 artifact。CandleScope 已删除 `packages/pyne-runtime` 和 in-process Pyne facade。完整执行记录见
 [`PLUGIN_PLATFORM_V1_EXECUTION_zh.md`](docs/PLUGIN_PLATFORM_V1_EXECUTION_zh.md)。
@@ -328,7 +358,7 @@ Phase 8 新增独立可构建的
 [`candlescope-plugin-pine-compat`](packages/candlescope-plugin-pine-compat/README_zh.md)：
 它固定公开 `pine-compat-runtime` v0.2.0 Release wheel，不包含 Pine 引擎源码快照，也不
 导入 CandleScope 私有模块，只声明闭合 K 线 batch 能力。开发 bundle 已发布为
-[`candlescope-plugin-pine-compat-v0.2.0-dev.1`](https://github.com/Ryan00956/CandleScope/releases/tag/candlescope-plugin-pine-compat-v0.2.0-dev.1)；
+[`candlescope-plugin-pine-compat-v0.2.0-dev.1`](https://github.com/helenananaa/CandleScope/releases/tag/candlescope-plugin-pine-compat-v0.2.0-dev.1)；
 realtime、strategy、`request.*`、import 和原生对象等未公开或无法忠实映射的能力继续
 fail closed。
 

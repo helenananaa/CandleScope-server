@@ -1,8 +1,12 @@
-# CandleScope
+# CandleScope Server
 
 [简体中文](README_zh.md)
 
-Lightweight trading chart software built with FastAPI, React, Vite, and Lightweight Charts. CandleScope supports Binance and OKX market data, spot and perpetual market types, a modular Data Engine, exchange-aware symbol metadata, realtime WebSocket streams, built-in indicators, and Pine-style Python scripting through Pyne.
+Server-profile development repository for CandleScope, built on the same FastAPI,
+React, Vite, and Lightweight Charts codebase as the local-first application.
+CandleScope supports Binance and OKX market data, spot and perpetual market
+types, a modular Data Engine, exchange-aware symbol metadata, realtime WebSocket
+streams, built-in indicators, and Pine-style Python scripting through Pyne.
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.12-blue?logo=python" />
@@ -14,6 +18,7 @@ Lightweight trading chart software built with FastAPI, React, Vite, and Lightwei
 
 ## Contents
 
+- [Server Status](#server-status)
 - [Quick Start](#quick-start)
 - [What It Does](#what-it-does)
 - [Replay Training (Opt-In)](#replay-training-opt-in)
@@ -28,7 +33,34 @@ Lightweight trading chart software built with FastAPI, React, Vite, and Lightwei
 - [Notes](#notes)
 - [Acknowledgments](#acknowledgments)
 
+## Server Status
+
+This repository is the public development line for the CandleScope server
+profile. The implementation and verification artifacts currently extend through
+**Phase 1AC**.
+
+| Area | Current boundary |
+|---|---|
+| Personal profile | Remains runnable with the local SQLite, in-process, and local-file architecture. |
+| Server data plane | Contracts and gates cover durable event publication, ClickHouse projection, immutable Parquet archive, cold snapshot queries, health/reconciliation, and composition checks. |
+| Server identity and replay | Organization/workspace-scoped query identity, PostgreSQL replay-session leases, fencing, and lease-bound cold snapshot loading are implemented. |
+| Production readiness | Not yet claimed. `CANDLESCOPE_PROFILE=server` remains fail-closed. There is no Replay Worker pool, scheduler, HTTP replay API, or completed 24-hour public continuity proof. |
+
+Start with the [server product contract](docs/server/CANDLESCOPE_SERVER_PRODUCT_CONTRACT_zh.md),
+[architecture](docs/server/CANDLESCOPE_SERVER_ARCHITECTURE_zh.md), and the
+[Phase 1AC execution record](docs/server/CANDLESCOPE_SERVER_PHASE1AC_EXECUTION_zh.md).
+Machine-readable phase evidence is stored under [`docs/server/evidence`](docs/server/evidence).
+
+Clone this server repository with:
+
+```bash
+git clone https://github.com/helenananaa/CandleScope-server.git
+```
+
 ## Quick Start
+
+> The commands in this section start the runnable **personal** profile. They do
+> not unlock the server profile or replace its external infrastructure gates.
 
 Requirements:
 
@@ -541,7 +573,7 @@ offline `.cspkg` installation and protocol probe gate. The 0.2.0 bridge covers
 markers, horizontal lines, fills, and other output through negotiated structured
 Render IR and passes the frozen goldens. The trusted development asset is now
 published as
-[`candlescope-plugin-pyne-v0.2.0-dev.1`](https://github.com/Ryan00956/CandleScope/releases/tag/candlescope-plugin-pyne-v0.2.0-dev.1).
+[`candlescope-plugin-pyne-v0.2.0-dev.1`](https://github.com/helenananaa/CandleScope/releases/tag/candlescope-plugin-pyne-v0.2.0-dev.1).
 The product bootstrap pins its URL, size, platform, and outer SHA-256, while the
 generic community installer remains local-artifact-only. CandleScope no longer
 contains `packages/pyne-runtime` or an in-process Pyne facade.
@@ -581,7 +613,7 @@ Phase 8 adds the independently buildable
 It pins the public `pine-compat-runtime` v0.2.0 Release wheel, contains no Pine
 engine source snapshot or private CandleScope imports, and advertises only its
 closed-bar batch contract. The development bundle is published as
-[`candlescope-plugin-pine-compat-v0.2.0-dev.1`](https://github.com/Ryan00956/CandleScope/releases/tag/candlescope-plugin-pine-compat-v0.2.0-dev.1).
+[`candlescope-plugin-pine-compat-v0.2.0-dev.1`](https://github.com/helenananaa/CandleScope/releases/tag/candlescope-plugin-pine-compat-v0.2.0-dev.1).
 Unsupported realtime, strategy, `request.*`, import, and native-object features
 remain fail-closed.
 

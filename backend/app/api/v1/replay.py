@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Literal
+from collections.abc import Awaitable, Callable
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -11,6 +12,7 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.config import REPLAY_SETTINGS
+from app.replay.application import ReplayApplication
 from app.replay.constants import (
     REPLAY_PROTOCOL,
     CommandType,
@@ -25,8 +27,8 @@ from app.replay.models import (
     validate_identifier,
 )
 from app.replay.service import ReplayService
-from app.replay.training.errors import TrainingRunError
 from app.replay.training.commands import ReplayV2Command
+from app.replay.training.errors import TrainingRunError
 from app.replay.training.models import (
     REPLAY_V2_PROTOCOL,
     AccountDataMode,
@@ -44,7 +46,6 @@ from app.replay.training.models import (
     TrainingRunSetupRequest,
 )
 from app.replay.training.service import TrainingRunService
-
 
 MAX_REPLAY_REQUEST_BYTES = 64 * 1024
 MAX_REPLAY_DRAWING_REQUEST_BYTES = 2_100_000
@@ -526,7 +527,7 @@ def _request_too_large(*, limit_bytes: int) -> ReplayDomainError:
     )
 
 
-def replay_service_from_state(state: object) -> ReplayService:
+def replay_service_from_state(state: object) -> ReplayService | ReplayApplication:
     service = getattr(state, "replay_service", None)
     if service is None:
         raise ReplayDomainError(
@@ -536,7 +537,7 @@ def replay_service_from_state(state: object) -> ReplayService:
     return service
 
 
-def _service(request: Request) -> ReplayService:
+def _service(request: Request) -> ReplayService | ReplayApplication:
     return replay_service_from_state(request.app.state)
 
 
@@ -1354,11 +1355,11 @@ __all__ = [
     "MAX_REPLAY_REQUEST_BYTES",
     "ReplayCommandPayload",
     "ReplayV2CommandPayload",
-    "TrainingRunPreparationPayload",
     "TrainingRunMarketSelectionPayload",
+    "TrainingRunPreparationPayload",
     "TrainingRunSetupPayload",
     "replay_error_payload",
-    "replay_training_unavailable_payload",
     "replay_service_from_state",
+    "replay_training_unavailable_payload",
     "router",
 ]

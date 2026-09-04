@@ -278,6 +278,9 @@ class ReplayScheduler:
     async def scan_timeouts(self) -> int:
         return await self._store.expire_workers_and_timeouts(now_ms=self._clock_ms())
 
+    async def get_request(self, request_id: str) -> ReplaySchedulerRequest | None:
+        return await self._store.get_request(request_id)
+
     async def _require(self, request_id: str) -> ReplaySchedulerRequest:
         current = await self._store.get_request(request_id)
         if current is None:

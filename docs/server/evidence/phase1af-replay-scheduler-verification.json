@@ -1,0 +1,49 @@
+{
+  "schema_version": "candlescope.server-phase1af-verification.v1",
+  "captured_at_utc": "2026-09-04T09:29:48Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "aaca5ce16f50f23498652cfe98fe6f30a16c09b9",
+  "phase": "phase1af-replay-scheduler-pool",
+  "phase_passed": true,
+  "phase1af_passed": true,
+  "status": "REPLAY_SCHEDULER_POOL_COMPLETE_NOT_EXTERNAL_API",
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "server_http_replay_api_delivered": false,
+    "personal_default_profile_unchanged": true
+  },
+  "invariants": {
+    "scheduler_creates_actors": false,
+    "assignment_uses_skip_locked": true,
+    "write_power_still_requires_replay_lease": true,
+    "dsn_in_scheduler_repr": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1AF unit plus 1AE/1AA regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1af_replay_scheduler.py backend/tests/test_server_phase1ae_replay_worker.py backend/tests/test_server_phase1aa_replay_lease.py",
+      "result": "13 passed"
+    },
+    {
+      "name": "Phase 1AF two-worker Compose integration",
+      "command": "docker compose -p candlescope-phase1af -f deploy/server/compose.phase1af.yml up -d --wait && CANDLESCOPE_PHASE1AF_INTEGRATION=1 CANDLESCOPE_PHASE1AF_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1af_replay_scheduler.py && docker compose -p candlescope-phase1af -f deploy/server/compose.phase1af.yml down -v",
+      "result": "1 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_scheduler.py backend/app/server_runtime/storage/postgres_replay_scheduler.py backend/tests/test_server_phase1af_replay_scheduler.py backend/tests/integration/test_server_phase1af_replay_scheduler.py",
+      "result": "passed"
+    },
+    {
+      "name": "git diff whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Server HTTP/WS replay API exists",
+    "CANDLESCOPE_PROFILE=server can start FastAPI",
+    "production-ready",
+    "twenty_four_hour_public_continuity"
+  ]
+}

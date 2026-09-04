@@ -1,0 +1,57 @@
+{
+  "schema_version": "candlescope.server-phase1ae-verification.v1",
+  "captured_at_utc": "2026-09-04T09:20:39Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "43e23939f6b948e3cd67e0e82024723d3b831f2c",
+  "phase": "phase1ae-replay-worker-takeover",
+  "phase_passed": true,
+  "phase1ae_passed": true,
+  "status": "REPLAY_WORKER_TAKEOVER_COMPLETE_NOT_SCHEDULER",
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "replay_scheduler_delivered": false,
+    "server_http_replay_api_delivered": false,
+    "personal_default_profile_unchanged": true
+  },
+  "invariants": {
+    "lease_token_persisted_in_session_spec": false,
+    "dsn_in_worker_repr": false,
+    "worker_role_is_dml_only": true,
+    "old_token_writes_zero_rows": true,
+    "sigkill_takeover_restores_checkpoint": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1AE Compose config",
+      "command": "docker compose -p candlescope-phase1ae -f deploy/server/compose.phase1ae.yml config",
+      "result": "passed"
+    },
+    {
+      "name": "Phase 1AE SIGKILL takeover integration",
+      "command": "docker compose -p candlescope-phase1ae -f deploy/server/compose.phase1ae.yml up -d --wait && CANDLESCOPE_PHASE1AE_INTEGRATION=1 CANDLESCOPE_PHASE1AE_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1ae_replay_worker_takeover.py && docker compose -p candlescope-phase1ae -f deploy/server/compose.phase1ae.yml down -v",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1AE unit plus 1AD/1AB/personal recovery regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1ae_replay_worker.py backend/tests/test_server_phase1ad_replay_actor.py backend/tests/test_server_phase1ab_replay_lease_postgres.py backend/tests/test_replay_recovery.py backend/tests/test_replay_shutdown.py",
+      "result": "49 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_runtime_migrations.py backend/app/server_runtime/storage/postgres_replay_session.py backend/app/server_runtime/replay_worker_settings.py backend/app/server_runtime/replay_worker_health.py backend/app/server_runtime/replay_worker.py backend/scripts/server_replay_worker.py backend/tests/test_server_phase1ae_replay_worker.py backend/tests/integration/test_server_phase1ae_replay_worker_takeover.py && uvx ruff@0.16.2 format --check ...",
+      "result": "passed"
+    },
+    {
+      "name": "git diff whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Replay scheduler or Worker pool exists",
+    "Server HTTP/WS replay API exists",
+    "CANDLESCOPE_PROFILE=server can start FastAPI",
+    "production-ready",
+    "twenty_four_hour_public_continuity"
+  ]
+}

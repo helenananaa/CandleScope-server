@@ -14,7 +14,12 @@ from app.data_engine.interval_policy import (
     compute_bucket_start_ms,
     parse_interval_ms,
 )
-from app.replay.actor import ActorMutation, ActorSnapshot, ReplaySessionActor
+from app.replay.actor import (
+    ActorMutation,
+    ActorRecoveryTarget,
+    ActorSnapshot,
+    ReplaySessionActor,
+)
 from app.replay.bars.builder import assess_bar_builder_capability
 from app.replay.broker.models import PAPER_LINEAR_EXECUTION_MODE, BrokerConfig
 from app.replay.canonical import canonical_sha256
@@ -620,6 +625,67 @@ class ServerReplaySession:
                 initial_checkpoint,
                 state,
             )
+        except BaseException:
+            await abort_unregistered_actor(actor)
+            self._actor = None
+            raise
+        self._registered = True
+        self._accepting = True
+        return await actor.public_snapshot()
+
+    async def recover(self) -> dict[str, object]:
+        if self._closed:
+            raise ServerReplaySessionError("server replay session is closed")
+        if self._registered:
+            return await self.public_snapshot()
+        spec = self._spec
+        loaded = await load_leased_server_snapshot(
+            self._lease_store,
+            spec.lease,
+            self._query,
+            spec.pin,
+            query_page_limit=self._query_page_limit,
+            page_rows=self._page_rows,
+            max_scan_rows=self._max_scan_rows,
+            max_query_pages=self._max_query_pages,
+        )
+        self._lease = loaded.lease
+        recovery = await self._session_store.load_recovery(
+            spec.lease.session_id,
+            self._lease,
+        )
+        factory = AggTradeReplaySessionFactory()
+        actor = factory.create_actor(
+            session_id=spec.lease.session_id,
+            config=spec.config,
+            broker_config=spec.broker_config,
+            reader=loaded.reader,
+            replay_start_ms=spec.replay_start_ms,
+            replay_end_time_ms=spec.replay_end_time_ms,
+            warmup_bars=(),
+            command_queue_size=spec.command_queue_size,
+            event_buffer_size=spec.event_buffer_size,
+            max_emit_fps=spec.max_emit_fps,
+            controller_ttl_seconds=spec.controller_ttl_seconds,
+            checkpoint_event_interval=spec.checkpoint_event_interval,
+            checkpoint_virtual_ms=spec.checkpoint_virtual_ms,
+            restore_checkpoint=recovery.checkpoint,
+            recovery_target=ActorRecoveryTarget(
+                mutations=recovery.mutations,
+                revision=int(recovery.state["revision"]),
+                event_sequence=int(recovery.state["event_sequence"]),
+                command_log_offset=int(recovery.state["command_log_offset"]),
+                state_hash=str(recovery.state["state_hash"]),
+            ),
+            mutation_hook=self._persist_mutation,
+            max_closed_bars=spec.max_closed_bars,
+            execution_mode=spec.execution_mode,
+            max_command_records=spec.max_command_records,
+            max_recent_checkpoints=spec.max_recent_checkpoints,
+        )
+        self._actor = actor
+        try:
+            await actor.start()
         except BaseException:
             await abort_unregistered_actor(actor)
             self._actor = None

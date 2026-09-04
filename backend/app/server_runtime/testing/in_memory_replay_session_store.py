@@ -165,13 +165,14 @@ class InMemoryReplaySessionStore:
                         if existing.result is None
                         else dict(existing.result),
                     )
-            self._reject_integrity_conflict(
-                row,
-                kind=mutation.kind,
-                revision=incoming_revision,
-                event_sequence=incoming_sequence,
-                mutation_hash=integrity,
-            )
+            if mutation.kind == "command" and mutation.error is None:
+                self._reject_integrity_conflict(
+                    row,
+                    kind=mutation.kind,
+                    revision=incoming_revision,
+                    event_sequence=incoming_sequence,
+                    mutation_hash=integrity,
+                )
             events = tuple(event.to_dict() for event in mutation.events)
             payload = {
                 "kind": mutation.kind,
@@ -333,6 +334,7 @@ class InMemoryReplaySessionStore:
         for item in row.mutations:
             if (
                 item.kind == "command"
+                and item.command_id is not None
                 and item.revision == revision
                 and item.event_sequence == event_sequence
                 and item.mutation_hash != mutation_hash

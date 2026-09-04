@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 from app.data_engine.ingestion.models import DataSource, MarketEvent, StreamType
-from app.deployment import ServerRuntimeUnavailableError, load_deployment_settings
+from app.deployment import load_deployment_settings
 from app.replay.broker.models import BrokerConfig, BrokerLimits, InstrumentFilters
 from app.replay.constants import REPLAY_PROTOCOL, CommandType, QualityMode, SourceKind
 from app.replay.models import (

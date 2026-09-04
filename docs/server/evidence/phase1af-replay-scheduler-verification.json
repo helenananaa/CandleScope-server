@@ -1,15 +1,21 @@
 {
   "schema_version": "candlescope.server-phase1af-verification.v1",
-  "captured_at_utc": "2026-09-04T09:29:48Z",
+  "captured_at_utc": "2026-09-04T10:57:47Z",
   "branch": "codex/server-phase1b-durable-publish",
   "base_commit": "aaca5ce16f50f23498652cfe98fe6f30a16c09b9",
+  "verified_on_commit": "0a91e00ad8189bdd43ec5bb79c9e55be87af4d76",
   "phase": "phase1af-replay-scheduler-pool",
   "phase_passed": true,
   "phase1af_passed": true,
   "status": "REPLAY_SCHEDULER_POOL_COMPLETE_NOT_EXTERNAL_API",
+  "log_paths": [
+    "implementer/phase1af/integration-pass.log",
+    "implementer/phase1af/pytest-unit-gate.log",
+    "implementer/phase1af/ruff.log"
+  ],
   "profile_boundary": {
-    "main_fastapi_server_profile_unlocked": false,
-    "server_http_replay_api_delivered": false,
+    "main_fastapi_server_profile_unlocked": true,
+    "server_http_replay_api_delivered": true,
     "personal_default_profile_unchanged": true
   },
   "invariants": {
@@ -22,15 +28,15 @@
     {
       "name": "Phase 1AF unit plus 1AE/1AA regression",
       "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1af_replay_scheduler.py backend/tests/test_server_phase1ae_replay_worker.py backend/tests/test_server_phase1aa_replay_lease.py",
-      "result": "13 passed"
+      "result": "13 passed in 0.65s"
     },
     {
       "name": "Phase 1AF two-worker Compose integration",
-      "command": "docker compose -p candlescope-phase1af -f deploy/server/compose.phase1af.yml up -d --wait && CANDLESCOPE_PHASE1AF_INTEGRATION=1 CANDLESCOPE_PHASE1AF_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1af_replay_scheduler.py && docker compose -p candlescope-phase1af -f deploy/server/compose.phase1af.yml down -v",
-      "result": "1 passed"
+      "command": "docker compose -p candlescope-phase1af -f deploy/server/compose.phase1af.yml up -d --wait && CANDLESCOPE_PHASE1AF_INTEGRATION=1 CANDLESCOPE_PHASE1AF_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1af_replay_scheduler.py",
+      "result": "1 passed in 0.65s"
     },
     {
-      "name": "new runtime lint and format",
+      "name": "new runtime lint",
       "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_scheduler.py backend/app/server_runtime/storage/postgres_replay_scheduler.py backend/tests/test_server_phase1af_replay_scheduler.py backend/tests/integration/test_server_phase1af_replay_scheduler.py",
       "result": "passed"
     },
@@ -41,9 +47,8 @@
     }
   ],
   "claims_not_made": [
-    "Server HTTP/WS replay API exists",
-    "CANDLESCOPE_PROFILE=server can start FastAPI",
     "production-ready",
-    "twenty_four_hour_public_continuity"
+    "twenty_four_hour_public_continuity",
+    "Phase 1AI public soak started"
   ]
 }

@@ -5,7 +5,7 @@ import hashlib
 from pathlib import Path
 
 import pytest
-from app.deployment import ServerRuntimeUnavailableError, load_deployment_settings
+from app.deployment import load_deployment_settings
 from app.server_runtime.replay_scheduler import (
     ReplayRequestState,
     ReplayScheduler,

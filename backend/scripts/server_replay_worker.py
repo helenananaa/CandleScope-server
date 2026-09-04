@@ -106,8 +106,8 @@ async def _run(args: argparse.Namespace) -> None:
 
     async def command_handler(request: web.Request) -> web.Response:
         _authorize(request, settings.worker_control_token)
-        body = await request.json()
         try:
+            body = await request.json()
             result = await worker.submit(
                 ReplayCommand(
                     protocol=REPLAY_PROTOCOL,
@@ -120,6 +120,19 @@ async def _run(args: argparse.Namespace) -> None:
                     payload=dict(body.get("payload") or {}),
                 )
             )
+            return web.json_response(
+                {
+                    "command_id": result.command_id,
+                    "revision": result.revision,
+                    "sequence": result.sequence,
+                    "state": result.state.value,
+                    "state_hash": result.state_hash,
+                    "cursor": {
+                        "source_sequence": result.cursor.source_sequence,
+                        "last_agg_trade_id": result.cursor.last_agg_trade_id,
+                    },
+                }
+            )
         except Exception as exc:  # noqa: BLE001
             details = getattr(exc, "details", None)
             return web.json_response(
@@ -131,19 +144,6 @@ async def _run(args: argparse.Namespace) -> None:
                 },
                 status=500,
             )
-        return web.json_response(
-            {
-                "command_id": result.command_id,
-                "revision": result.revision,
-                "sequence": result.sequence,
-                "state": result.state.value,
-                "state_hash": result.state_hash,
-                "cursor": {
-                    "source_sequence": result.cursor.source_sequence,
-                    "last_agg_trade_id": result.cursor.last_agg_trade_id,
-                },
-            }
-        )
 
     app.router.add_get("/health", health)
     app.router.add_get("/snapshot", snapshot_handler)

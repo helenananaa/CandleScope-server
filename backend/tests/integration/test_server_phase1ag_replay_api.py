@@ -130,5 +130,7 @@ async def _prepare() -> None:
         runtime_login_role=RUNTIME_ROLE,
     ).apply()
     await apply_scheduler_migration(
-        ADMIN_DSN, migration_path=DEFAULT_SCHEDULER_MIGRATION_PATH
+        ADMIN_DSN,
+        migration_path=DEFAULT_SCHEDULER_MIGRATION_PATH,
+        runtime_login_role=RUNTIME_ROLE,
     )

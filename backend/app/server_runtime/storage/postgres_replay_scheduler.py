@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import psycopg
+from psycopg import sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -471,7 +472,12 @@ class PostgresReplaySchedulerStore:
         )
 
 
-async def apply_scheduler_migration(dsn: str, *, migration_path: Path) -> None:
+async def apply_scheduler_migration(
+    dsn: str,
+    *,
+    migration_path: Path,
+    runtime_login_role: str | None = None,
+) -> None:
     raw = migration_path.read_bytes()
     digest = hashlib.sha256(raw).hexdigest()
     if digest != SCHEDULER_MIGRATION_SHA256:
@@ -496,6 +502,26 @@ async def apply_scheduler_migration(dsn: str, *, migration_path: Path) -> None:
                 SCHEDULER_MIGRATION_SHA256,
             ),
         )
+        if runtime_login_role:
+            await cursor.execute(
+                sql.SQL(
+                    "GRANT {} TO {} WITH ADMIN FALSE, INHERIT TRUE, SET TRUE"
+                ).format(
+                    sql.Identifier("candlescope_replay_runtime"),
+                    sql.Identifier(runtime_login_role),
+                )
+            )
+            for table in (
+                REQUEST_TABLE,
+                WORKER_TABLE,
+                ASSIGNMENT_TABLE,
+                COMMAND_JOURNAL_TABLE,
+            ):
+                await cursor.execute(
+                    sql.SQL(
+                        "GRANT SELECT, INSERT, UPDATE ON TABLE {} TO {}"
+                    ).format(sql.Identifier(table), sql.Identifier(runtime_login_role))
+                )
 
 
 def _row_to_request(row: Mapping[str, Any]) -> ReplaySchedulerRequest:

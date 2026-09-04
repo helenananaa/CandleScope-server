@@ -76,16 +76,24 @@ async def _run_gate(tmp_path: Path) -> None:
     assignment_path = tmp_path / "assignment.json"
     _write_frozen_query(query_path)
     _write_assignment(assignment_path, query_path)
+    worker_log = tmp_path / "worker-stderr.log"
     worker_a = await _start_worker(
         worker_id="worker-a",
         mode="new",
         bind=WORKER_A_BIND,
         token=CONTROL_A,
         assignment=assignment_path,
+        log_path=worker_log,
     )
     worker_b: asyncio.subprocess.Process | None = None
     try:
-        await _wait_ready(WORKER_A_BIND)
+        try:
+            await _wait_ready(WORKER_A_BIND)
+        except TimeoutError as exc:
+            raw = worker_log.read_text(encoding="utf-8") if worker_log.is_file() else ""
+            for secret in (RUNTIME_PASSWORD, CONTROL_A, CONTROL_B, QUERY_CREDENTIAL):
+                raw = raw.replace(secret, "<redacted>")
+            raise TimeoutError(f"{exc}; worker-stderr={raw[-2000:]}") from exc
         acquired = await _command(
             WORKER_A_BIND,
             CONTROL_A,
@@ -119,6 +127,7 @@ async def _run_gate(tmp_path: Path) -> None:
             bind=WORKER_B_BIND,
             token=CONTROL_B,
             assignment=assignment_path,
+            log_path=worker_log,
         )
         await _wait_ready(WORKER_B_BIND)
         recovered = await _snapshot(WORKER_B_BIND, CONTROL_B)
@@ -328,6 +337,7 @@ async def _start_worker(
     bind: str,
     token: str,
     assignment: Path,
+    log_path: Path | None = None,
 ) -> asyncio.subprocess.Process:
     env = os.environ.copy()
     env.update(
@@ -342,19 +352,28 @@ async def _start_worker(
             "CANDLESCOPE_SERVER_REPLAY_WORKER_SHUTDOWN_TIMEOUT_MS": "1000",
         }
     )
-    return await asyncio.create_subprocess_exec(
-        str(PYTHON),
-        str(WORKER_SCRIPT),
-        "--assignment",
-        str(assignment),
-        "--mode",
-        mode,
-        "--control-bind",
-        bind,
-        env=env,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    stderr: int | None = asyncio.subprocess.DEVNULL
+    log_fd: int | None = None
+    if log_path is not None:
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        stderr = log_fd
+    try:
+        return await asyncio.create_subprocess_exec(
+            str(PYTHON),
+            str(WORKER_SCRIPT),
+            "--assignment",
+            str(assignment),
+            "--mode",
+            mode,
+            "--control-bind",
+            bind,
+            env=env,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=stderr,
+        )
+    finally:
+        if log_fd is not None:
+            os.close(log_fd)
 
 
 async def _wait_ready(bind: str, *, timeout: float = 15.0) -> dict[str, Any]:

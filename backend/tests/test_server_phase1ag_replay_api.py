@@ -4,7 +4,7 @@ import ast
 from pathlib import Path
 
 import pytest
-from app.deployment import ServerRuntimeUnavailableError, load_deployment_settings
+from app.deployment import load_deployment_settings
 from app.replay.constants import REPLAY_PROTOCOL, CommandType
 from app.replay.models import ReplayCommand
 from app.server_runtime.access_identity import (

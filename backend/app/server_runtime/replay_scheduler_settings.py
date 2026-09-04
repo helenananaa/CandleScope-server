@@ -17,6 +17,7 @@ class ReplaySchedulerConfigurationError(ValueError):
 class ReplaySchedulerSettings:
     postgres_dsn: str = field(repr=False)
     scan_interval_ms: int = 1_000
+    heartbeat_ttl_ms: int = 60_000
     health_bind: str | None = None
 
     def __post_init__(self) -> None:
@@ -50,5 +51,8 @@ class ReplaySchedulerSettings:
         return cls(
             postgres_dsn=dsn,
             scan_interval_ms=int(values.get(f"{ENV_PREFIX}SCAN_INTERVAL_MS", "1000")),
+            heartbeat_ttl_ms=int(
+                values.get(f"{ENV_PREFIX}HEARTBEAT_TTL_MS", "60000")
+            ),
             health_bind=values.get(f"{ENV_PREFIX}HEALTH_BIND"),
         )

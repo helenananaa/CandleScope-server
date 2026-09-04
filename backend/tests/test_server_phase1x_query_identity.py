@@ -295,5 +295,4 @@ def test_settings_reject_reserved_organization_ids() -> None:
 
 def test_server_profile_remains_fail_closed() -> None:
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()

@@ -706,7 +706,10 @@ def test_replay_package_does_not_import_server_runtime() -> None:
 
 
 def test_server_profile_remains_refused() -> None:
+    from app.deployment import FastAPISqliteBootError, refuse_server_sqlite_boot
+
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    assert settings.runtime_supported is False
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    assert settings.runtime_supported is True
+    settings.require_runtime_support()
+    with pytest.raises(FastAPISqliteBootError):
+        refuse_server_sqlite_boot(settings)

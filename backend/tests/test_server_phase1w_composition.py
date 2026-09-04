@@ -58,15 +58,15 @@ def test_complete_env_is_configured_but_does_not_unlock_fastapi() -> None:
     composition = load_server_data_plane_composition(_complete_env())
     wire = composition.to_public_wire()
     assert wire["status"] == "configured"
-    assert wire["fastapi_runtime_supported"] is False
+    assert wire["fastapi_runtime_supported"] is True
     assert wire["fastapi_unlock_blockers"] == list(FASTAPI_UNLOCK_BLOCKERS)
+    assert wire["production_ready"] is False
     assert "writer-secret" not in json.dumps(wire)
     assert "query-secret" not in json.dumps(wire)
     assert "secret" not in json.dumps(wire["s3_endpoint_url"])
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    assert settings.runtime_supported is False
-    with pytest.raises(ServerRuntimeUnavailableError, match="contract-only"):
-        settings.require_runtime_support()
+    assert settings.runtime_supported is True
+    settings.require_runtime_support()
 
 
 def test_missing_role_and_cross_role_drift_fail_closed() -> None:
@@ -115,10 +115,11 @@ def test_cli_config_and_fastapi_unlock(
     assert server_composition_check.main(["config"]) == 0
     configured = json.loads(capsys.readouterr().out)
     assert configured["status"] == "configured"
-    assert configured["fastapi_runtime_supported"] is False
-    assert server_composition_check.main(["fastapi-unlock"]) == 1
-    locked = json.loads(capsys.readouterr().out)
-    assert locked["code"] == "FASTAPI_SERVER_PROFILE_LOCKED"
+    assert configured["fastapi_runtime_supported"] is True
+    assert server_composition_check.main(["fastapi-unlock"]) == 0
+    unlocked = json.loads(capsys.readouterr().out)
+    assert unlocked["fastapi_runtime_supported"] is True
+    assert unlocked["production_ready"] is False
     assert fastapi_unlock_refusal()["fastapi_runtime_supported"] is False
     assert (
         load_deployment_settings({"CANDLESCOPE_PROFILE": "server"}).profile

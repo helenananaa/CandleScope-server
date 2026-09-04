@@ -16,6 +16,7 @@ def test_lifecycle_print_literals_are_windows_console_safe() -> None:
     backend_root = Path(__file__).resolve().parents[1]
     lifecycle_modules = (
         backend_root / "app" / "main.py",
+        backend_root / "app" / "deployment" / "personal_runtime.py",
         backend_root / "app" / "data_engine" / "runtime.py",
         backend_root / "app" / "data_engine" / "storage" / "klines_repo.py",
     )
@@ -146,11 +147,19 @@ def _patch_startup_dependencies(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("CANDLESCOPE_PLUGIN_PLATFORM_V2_ROOT", str(platform_root))
 
-    monkeypatch.setattr(main_module, "EventLoopLagMonitor", _LagMonitor)
-    monkeypatch.setattr(main_module, "init_klines_storage", lambda: None)
-    monkeypatch.setattr(main_module, "init_market_metrics_storage", lambda: None)
-    monkeypatch.setattr(main_module, "init_trade_flow_storage", lambda _path: None)
-    monkeypatch.setattr(main_module, "init_liquidation_storage", lambda _path: None)
+    from app.deployment import personal_runtime as personal_runtime_module
+
+    monkeypatch.setattr(personal_runtime_module, "EventLoopLagMonitor", _LagMonitor)
+    monkeypatch.setattr(personal_runtime_module, "init_klines_storage", lambda: None)
+    monkeypatch.setattr(
+        personal_runtime_module, "init_market_metrics_storage", lambda: None
+    )
+    monkeypatch.setattr(
+        personal_runtime_module, "init_trade_flow_storage", lambda _path: None
+    )
+    monkeypatch.setattr(
+        personal_runtime_module, "init_liquidation_storage", lambda _path: None
+    )
 
     async def _init_replay_runtime() -> None:
         main_module.app.state.replay_runtime = None

@@ -1,4 +1,9 @@
-"""Fail-closed data-plane composition inventory. FastAPI server remains locked."""
+"""Fail-closed data-plane composition inventory.
+
+Phase 1AH unlocks FastAPI ``CANDLESCOPE_PROFILE=server`` after this inventory
+and the SQLite negative gate pass. Public 24-hour continuity is still absent,
+so the composition is not production-ready.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +12,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from app.deployment.fastapi_sqlite_boot import fastapi_sqlite_boot_inventory
-from app.deployment.profile import FASTAPI_UNLOCK_BLOCKERS
+from app.deployment.profile import (
+    FASTAPI_UNLOCK_BLOCKERS,
+    PRODUCTION_READY_BLOCKERS,
+)
 from app.server_runtime.archive_settings import (
     ArchiveWriterConfigurationError,
     ArchiveWriterSettings,
@@ -66,6 +74,8 @@ class ServerCompositionError(RuntimeError):
             "details": self.details,
             "fastapi_runtime_supported": False,
             "fastapi_unlock_blockers": list(FASTAPI_UNLOCK_BLOCKERS),
+            "production_ready": False,
+            "production_ready_blockers": list(PRODUCTION_READY_BLOCKERS),
         }
 
 
@@ -92,8 +102,10 @@ class ServerDataPlaneComposition:
             "s3_endpoint_url": self.parquet_archiver.s3_endpoint_url,
             "s3_bucket": self.parquet_archiver.s3_bucket,
             "health_binds": dict(self.health_binds),
-            "fastapi_runtime_supported": False,
+            "fastapi_runtime_supported": True,
             "fastapi_unlock_blockers": list(FASTAPI_UNLOCK_BLOCKERS),
+            "production_ready": False,
+            "production_ready_blockers": list(PRODUCTION_READY_BLOCKERS),
         }
 
 
@@ -175,12 +187,19 @@ def load_server_data_plane_composition(
 def fastapi_unlock_refusal() -> dict[str, object]:
     return ServerCompositionError(
         "FASTAPI_SERVER_PROFILE_LOCKED",
-        "data-plane composition does not unlock CANDLESCOPE_PROFILE=server",
+        "data-plane composition is incomplete; CANDLESCOPE_PROFILE=server stays locked",
         details={
             "fastapi_unlock_blockers": list(FASTAPI_UNLOCK_BLOCKERS),
+            "production_ready_blockers": list(PRODUCTION_READY_BLOCKERS),
             "sqlite_boot": fastapi_sqlite_boot_inventory(),
         },
     ).to_wire()
+
+
+def fastapi_unlock_status(composition: ServerDataPlaneComposition) -> dict[str, object]:
+    wire = composition.to_public_wire()
+    wire["sqlite_boot"] = fastapi_sqlite_boot_inventory()
+    return wire
 
 
 def _load_role(
@@ -224,5 +243,6 @@ __all__ = [
     "ServerCompositionError",
     "ServerDataPlaneComposition",
     "fastapi_unlock_refusal",
+    "fastapi_unlock_status",
     "load_server_data_plane_composition",
 ]

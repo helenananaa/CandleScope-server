@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping
+from typing import Any
 
 from app.replay.commands import CommandResult
 from app.replay.errors import ReplayDomainError, ReplayErrorCode
@@ -15,6 +17,7 @@ from app.server_runtime.replay_authorization import (
 )
 from app.server_runtime.replay_event_stream import ReplayEventStream
 from app.server_runtime.replay_scheduler import ReplayScheduler, ReplaySchedulerRequest
+from app.server_runtime.replay_session import command_result_from_payload
 
 CAPABILITY_UNAVAILABLE = "CAPABILITY_UNAVAILABLE"
 V2_UNAVAILABLE_ENDPOINTS = {
@@ -41,10 +44,14 @@ class ServerReplayApiService:
         scheduler: ReplayScheduler,
         *,
         event_stream: ReplayEventStream,
+        session_store: Any | None = None,
+        command_wait_ms: int = 8_000,
         unavailable_endpoints: Mapping[str, str] | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._event_stream = event_stream
+        self._session_store = session_store
+        self._command_wait_ms = command_wait_ms
         inventory = dict(FIRST_SLICE_ENDPOINTS)
         inventory.update(V2_UNAVAILABLE_ENDPOINTS)
         inventory.update(dict(unavailable_endpoints or {}))
@@ -117,11 +124,24 @@ class ServerReplayApiService:
         self, session_id: str, *, principal: ServerPrincipal
     ) -> dict[str, object]:
         require_read(principal)
+        request = await self._scheduler.get_by_session(session_id)
+        if request is None:
+            raise ReplayDomainError(
+                ReplayErrorCode.SESSION_NOT_FOUND,
+                "replay session does not exist",
+            )
+        require_scope(principal, request.organization_id, request.workspace_id)
+        state = request.state.value
+        if await self._scheduler.assignment_is_recovering(session_id):
+            state = "RECOVERING"
         return {
             "protocol": "replay.v1",
             "session_id": session_id,
-            "organization_id": principal.organization_id,
-            "workspace_id": principal.workspace_id,
+            "run_id": request.request_id,
+            "state": state,
+            "organization_id": request.organization_id,
+            "workspace_id": request.workspace_id,
+            "attempt": request.attempt,
         }
 
     async def submit_command(
@@ -132,9 +152,45 @@ class ServerReplayApiService:
         principal: ServerPrincipal,
     ) -> CommandResult:
         require_write(principal)
+        request = await self._scheduler.get_by_session(session_id)
+        if request is None:
+            raise ReplayDomainError(
+                ReplayErrorCode.SESSION_NOT_FOUND,
+                "command journal is bound to a leased worker session",
+                details={"session_id": session_id, "command_id": command.command_id},
+            )
+        require_scope(principal, request.organization_id, request.workspace_id)
+        await self._scheduler.enqueue_command(session_id, command.to_dict())
+        if self._session_store is None:
+            raise ReplayDomainError(
+                ReplayErrorCode.SESSION_NOT_FOUND,
+                "command journal is bound to a leased worker session",
+                details={"session_id": session_id, "command_id": command.command_id},
+            )
+        deadline = asyncio.get_running_loop().time() + (self._command_wait_ms / 1000)
+        while asyncio.get_running_loop().time() < deadline:
+            payload = await self._session_store.get_command_result(
+                session_id, command.command_id
+            )
+            if payload is not None:
+                if payload.get("rejected") is True:
+                    try:
+                        code = ReplayErrorCode(str(payload.get("error_code")))
+                    except ValueError:
+                        code = ReplayErrorCode.INVALID_STATE_TRANSITION
+                    raise ReplayDomainError(
+                        code,
+                        str(payload.get("error_message") or "command was rejected"),
+                        details={
+                            "session_id": session_id,
+                            "command_id": command.command_id,
+                        },
+                    )
+                return command_result_from_payload(payload)
+            await asyncio.sleep(0.05)
         raise ReplayDomainError(
             ReplayErrorCode.SESSION_NOT_FOUND,
-            "command journal is bound to a leased worker session",
+            "command result was not durable before the wait bound",
             details={"session_id": session_id, "command_id": command.command_id},
         )
 

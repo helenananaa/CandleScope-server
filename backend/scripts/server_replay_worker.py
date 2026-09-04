@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import signal
+import time
 from pathlib import Path
 
 from aiohttp import web
@@ -14,12 +16,17 @@ from app.replay.constants import REPLAY_PROTOCOL, CommandType
 from app.replay.models import ReplayCommand, ReplaySessionConfig
 from app.server_contracts import MarketDataSnapshotRef
 from app.server_runtime.health_http import parse_health_bind
+from app.server_runtime.replay_scheduler import ReplayScheduler
 from app.server_runtime.replay_session import ServerReplaySessionSpec
 from app.server_runtime.replay_snapshot import ReplayServerSnapshotPin
 from app.server_runtime.replay_worker import ReplayWorker
+from app.server_runtime.replay_worker_pool import ReplayWorkerPoolLoop
 from app.server_runtime.replay_worker_settings import ReplayWorkerSettings
 from app.server_runtime.storage.postgres_replay_lease import (
     PostgresReplaySessionLeaseStore,
+)
+from app.server_runtime.storage.postgres_replay_scheduler import (
+    PostgresReplaySchedulerStore,
 )
 from app.server_runtime.storage.postgres_replay_session import (
     PostgresReplaySessionStore,
@@ -162,12 +169,71 @@ def _authorize(request: web.Request, token: str) -> None:
         raise web.HTTPUnauthorized()
 
 
+async def _run_pool(args: argparse.Namespace) -> None:
+    settings = ReplayWorkerSettings.from_env()
+    store = PostgresReplaySchedulerStore(settings.postgres_dsn)
+    heartbeat_ttl_ms = int(
+        os.environ.get("CANDLESCOPE_SERVER_REPLAY_SCHEDULER_HEARTBEAT_TTL_MS", "60000")
+    )
+    scheduler = ReplayScheduler(
+        store,
+        clock_ms=lambda: time.time_ns() // 1_000_000,
+        heartbeat_ttl_ms=heartbeat_ttl_ms,
+    )
+    session_store = PostgresReplaySessionStore(settings.postgres_dsn)
+    lease_store = PostgresReplaySessionLeaseStore(settings.postgres_dsn)
+    pool = ReplayWorkerPoolLoop(
+        settings,
+        scheduler=scheduler,
+        lease_store=lease_store,
+        session_store=session_store,
+    )
+    host, port = parse_health_bind(args.control_bind)
+    app = web.Application()
+
+    async def health(_request: web.Request) -> web.Response:
+        worker = pool._worker
+        payload = (
+            {"ready": False, "state": "idle"}
+            if worker is None
+            else worker.health().to_wire()
+        )
+        return web.json_response(payload)
+
+    app.router.add_get("/health", health)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    await web.TCPSite(runner, host, port).start()
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, stop.set)
+    run_task = asyncio.create_task(pool.run())
+    try:
+        await stop.wait()
+    finally:
+        pool.request_stop()
+        run_task.cancel()
+        try:
+            await run_task
+        except asyncio.CancelledError:
+            pass
+        await pool.stop()
+        await runner.cleanup()
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="CandleScope Phase 1AE Replay Worker")
-    parser.add_argument("--assignment", required=True)
+    parser = argparse.ArgumentParser(description="CandleScope Replay Worker")
+    parser.add_argument("--assignment")
     parser.add_argument("--mode", choices=("new", "recover"), default="new")
     parser.add_argument("--control-bind", required=True)
+    parser.add_argument("--pool", action="store_true")
     args = parser.parse_args()
+    if args.pool:
+        asyncio.run(_run_pool(args))
+        return
+    if not args.assignment:
+        parser.error("--assignment is required unless --pool is set")
     asyncio.run(_run(args))
 
 

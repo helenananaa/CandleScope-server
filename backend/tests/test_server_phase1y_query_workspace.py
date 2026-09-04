@@ -325,5 +325,4 @@ def test_organization_and_workspace_must_be_bound_together() -> None:
 
 def test_server_profile_remains_fail_closed() -> None:
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()

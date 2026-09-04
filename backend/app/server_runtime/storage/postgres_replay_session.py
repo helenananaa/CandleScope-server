@@ -486,6 +486,53 @@ class PostgresReplaySessionStore:
             )
             return await self._load_record(cursor, current.session_id)
 
+    async def get_command_result(
+        self, session_id: str, command_id: str
+    ) -> Mapping[str, object] | None:
+        async with (
+            await self._connect() as connection,
+            connection.cursor() as cursor,
+        ):
+            await cursor.execute(
+                f"""
+                SELECT result_json, accepted, error_code, error_message
+                FROM {COMMAND_TABLE}
+                WHERE session_id = %s AND command_id = %s
+                """,
+                (session_id, command_id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            if row["result_json"] is not None:
+                return dict(row["result_json"])
+            if row["accepted"] is False:
+                return {
+                    "rejected": True,
+                    "error_code": str(row["error_code"] or "INVALID_STATE_TRANSITION"),
+                    "error_message": str(row["error_message"] or "command was rejected"),
+                }
+            return None
+
+    async def events_after(
+        self, session_id: str, after_sequence: int
+    ) -> tuple[Mapping[str, object], ...]:
+        async with (
+            await self._connect() as connection,
+            connection.cursor() as cursor,
+        ):
+            await cursor.execute(
+                f"""
+                SELECT event_json
+                FROM {OUTBOX_TABLE}
+                WHERE session_id = %s AND sequence > %s
+                ORDER BY sequence ASC
+                """,
+                (session_id, after_sequence),
+            )
+            rows = await cursor.fetchall()
+            return tuple(dict(row["event_json"]) for row in rows)
+
     async def verify_runtime_privileges(self) -> None:
         async with (
             await self._connect() as connection,

@@ -117,27 +117,29 @@ def test_server_profile_freezes_roles_but_fails_closed_in_phase_zero() -> None:
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": " SERVER "})
 
     assert settings.profile is DeploymentProfile.SERVER
-    assert settings.runtime_supported is False
+    assert settings.runtime_supported is True
     assert settings.bindings.control_store == "postgresql"
     assert settings.bindings.market_event_log == "kafka_compatible"
     assert settings.bindings.analytical_store == "clickhouse"
     assert settings.bindings.immutable_archive == "object_storage_parquet"
-    with pytest.raises(ServerRuntimeUnavailableError, match="contract-only"):
-        settings.require_runtime_support()
+    settings.require_runtime_support()
 
 
 def test_application_startup_rejects_server_before_local_storage(monkeypatch) -> None:
     from app import main as main_module
+    from app.deployment import personal_runtime as personal_module
 
     storage_calls: list[str] = []
     monkeypatch.setenv("CANDLESCOPE_PROFILE", "server")
     monkeypatch.setattr(
-        main_module,
+        personal_module,
         "init_klines_storage",
         lambda: storage_calls.append("sqlite"),
     )
 
-    with pytest.raises(ServerRuntimeUnavailableError, match="contract-only"):
+    from app.deployment import FastAPISqliteBootError
+
+    with pytest.raises(FastAPISqliteBootError):
         asyncio.run(main_module.startup_event())
 
     assert storage_calls == []

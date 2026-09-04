@@ -302,6 +302,37 @@ class InMemoryReplaySessionStore:
             row.closed = True
             return self._record(row)
 
+    async def get_command_result(
+        self, session_id: str, command_id: str
+    ) -> Mapping[str, object] | None:
+        row = self._sessions.get(session_id)
+        if row is None:
+            return None
+        command = row.commands.get(command_id)
+        if command is None:
+            return None
+        if command.result is not None:
+            return dict(command.result)
+        if command.accepted is False:
+            return {
+                "rejected": True,
+                "error_code": str(command.error_code or "INVALID_STATE_TRANSITION"),
+                "error_message": str(command.error_message or "command was rejected"),
+            }
+        return None
+
+    async def events_after(
+        self, session_id: str, after_sequence: int
+    ) -> tuple[Mapping[str, object], ...]:
+        row = self._sessions.get(session_id)
+        if row is None:
+            return ()
+        selected = []
+        for index, event in enumerate(row.outbox, start=1):
+            if index > after_sequence:
+                selected.append(dict(event))
+        return tuple(selected)
+
     async def _require_active_lease(
         self, lease: ReplaySessionLease
     ) -> ReplaySessionLease:

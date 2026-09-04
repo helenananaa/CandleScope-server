@@ -110,6 +110,7 @@ class ReplaySchedulerAssignment:
     worker_id: str
     session_id: str
     attempt: int
+    active: bool = True
 
 
 class ReplaySchedulerStore(Protocol):
@@ -154,12 +155,14 @@ class ReplayScheduler:
         max_pending_per_org: int = 4,
         max_active_per_org: int = 2,
         default_timeout_ms: int = 60_000,
+        heartbeat_ttl_ms: int = 60_000,
         clock_ms,
     ) -> None:
         self._store = store
         self._max_pending_per_org = max_pending_per_org
         self._max_active_per_org = max_active_per_org
         self._default_timeout_ms = default_timeout_ms
+        self._heartbeat_ttl_ms = heartbeat_ttl_ms
         self._clock_ms = clock_ms
 
     def __repr__(self) -> str:
@@ -222,7 +225,7 @@ class ReplayScheduler:
         await self._store.heartbeat(
             normalize_replay_worker_id(worker_id),
             capacity=capacity,
-            ttl_ms=60_000,
+            ttl_ms=self._heartbeat_ttl_ms,
         )
 
     async def claim(self, worker_id: str) -> ReplaySchedulerAssignment | None:
@@ -280,6 +283,48 @@ class ReplayScheduler:
 
     async def get_request(self, request_id: str) -> ReplaySchedulerRequest | None:
         return await self._store.get_request(request_id)
+
+    async def get_by_session(self, session_id: str) -> ReplaySchedulerRequest | None:
+        getter = getattr(self._store, "get_by_session", None)
+        if getter is None:
+            return None
+        return await getter(session_id)
+
+    async def get_assignment(
+        self, session_id: str
+    ) -> ReplaySchedulerAssignment | None:
+        getter = getattr(self._store, "get_assignment", None)
+        if getter is None:
+            return None
+        return await getter(session_id)
+
+    async def enqueue_command(
+        self, session_id: str, payload: Mapping[str, object]
+    ) -> None:
+        await self._store.enqueue_command(session_id, payload)
+
+    async def list_commands(
+        self, session_id: str
+    ) -> tuple[Mapping[str, object], ...]:
+        return await self._store.list_commands(session_id)
+
+    async def live_worker_count(self) -> int:
+        counter = getattr(self._store, "live_worker_count", None)
+        if counter is None:
+            return 0
+        return int(await counter())
+
+    async def assignment_is_recovering(self, session_id: str) -> bool:
+        probe = getattr(self._store, "assignment_is_recovering", None)
+        if probe is None:
+            return False
+        return bool(await probe(session_id))
+
+    async def drop_claim(self, assignment: ReplaySchedulerAssignment) -> None:
+        drop = getattr(self._store, "drop_claim", None)
+        if drop is None:
+            return
+        await drop(assignment)
 
     async def _require(self, request_id: str) -> ReplaySchedulerRequest:
         current = await self._store.get_request(request_id)

@@ -687,8 +687,12 @@ def test_startup_catalog_refresh_is_a_background_task(monkeypatch) -> None:
             await release.wait()
             return {}
 
+        from app.deployment import personal_runtime as personal_runtime_module
+
         monkeypatch.setattr(symbols_api, "refresh_exchange_metadata", slow_refresh)
-        monkeypatch.setattr(main_module, "SYMBOL_CATALOG_FOREGROUND_DWELL_SECONDS", 0)
+        monkeypatch.setattr(
+            personal_runtime_module, "SYMBOL_CATALOG_FOREGROUND_DWELL_SECONDS", 0
+        )
         task = main_module._schedule_symbol_catalog_refresh()
         await started.wait()
         assert task.done() is False
@@ -719,9 +723,15 @@ def test_startup_catalog_refresh_waits_for_foreground_quiet_dwell(monkeypatch) -
             refreshed.set()
             return {}
 
+        from app.deployment import personal_runtime as personal_runtime_module
+
         monkeypatch.setattr(symbols_api, "refresh_exchange_metadata", refresh)
-        monkeypatch.setattr(main_module, "SYMBOL_CATALOG_FOREGROUND_DWELL_SECONDS", 0.01)
-        monkeypatch.setattr(main_module, "SYMBOL_CATALOG_FOREGROUND_RECHECK_SECONDS", 0.005)
+        monkeypatch.setattr(
+            personal_runtime_module, "SYMBOL_CATALOG_FOREGROUND_DWELL_SECONDS", 0.01
+        )
+        monkeypatch.setattr(
+            personal_runtime_module, "SYMBOL_CATALOG_FOREGROUND_RECHECK_SECONDS", 0.005
+        )
         monkeypatch.setattr(
             main_module.app.state,
             "data_engine_runtime",
@@ -763,7 +773,9 @@ def test_catalog_shutdown_cancels_shielded_physical_refresh(monkeypatch) -> None
     asyncio.run(run())
 
 
-def test_startup_initializes_data_manager_before_catalog_schedule(monkeypatch) -> None:
+def test_startup_initializes_data_manager_before_catalog_schedule(
+    monkeypatch, tmp_path
+) -> None:
     from app import main as main_module
 
     events: list[str] = []
@@ -771,6 +783,9 @@ def test_startup_initializes_data_manager_before_catalog_schedule(monkeypatch) -
     class _LagMonitor:
         def start(self) -> None:
             pass
+
+        async def stop(self) -> None:
+            return None
 
     async def init_data_manager() -> None:
         events.append("data-manager")
@@ -783,14 +798,102 @@ def test_startup_initializes_data_manager_before_catalog_schedule(monkeypatch) -
         events.append("catalog")
         return None
 
-    monkeypatch.setattr(main_module, "EventLoopLagMonitor", lambda **kwargs: _LagMonitor())
-    monkeypatch.setattr(main_module, "init_klines_storage", lambda: None)
-    monkeypatch.setattr(main_module, "init_market_metrics_storage", lambda: None)
-    monkeypatch.setattr(main_module, "init_trade_flow_storage", lambda *args: None)
-    monkeypatch.setattr(main_module, "init_liquidation_storage", lambda *args: None)
+    from app.deployment import personal_runtime as personal_runtime_module
+
+    monkeypatch.setattr(
+        personal_runtime_module, "EventLoopLagMonitor", lambda **kwargs: _LagMonitor()
+    )
+    monkeypatch.setattr(personal_runtime_module, "init_klines_storage", lambda: None)
+    monkeypatch.setattr(
+        personal_runtime_module, "init_market_metrics_storage", lambda: None
+    )
+    monkeypatch.setattr(
+        personal_runtime_module, "init_trade_flow_storage", lambda *args: None
+    )
+    monkeypatch.setattr(
+        personal_runtime_module, "init_liquidation_storage", lambda *args: None
+    )
     monkeypatch.setattr(main_module, "_init_replay_runtime", init_replay_runtime)
     monkeypatch.setattr(main_module, "_init_data_manager", init_data_manager)
     monkeypatch.setattr(main_module, "_schedule_symbol_catalog_refresh", schedule_catalog)
+
+    import app.first_party_plugin_bootstrap as first_party_bootstrap_module
+    import app.indicator.runtime_service as runtime_service_module
+    import app.plugin_runtime as plugin_runtime_module
+    from app.first_party_plugin_bootstrap import FirstPartyPluginBootstrapResult
+
+    class _Host:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        def health_summary(self) -> dict[str, object]:
+            return {"status": "ok", "ready": 0, "enabled": 0}
+
+    class _Routing:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        def bind_catalog_projector(self, projector) -> None:
+            del projector
+
+    class _Platform:
+        root = tmp_path / "plugins"
+
+        def bind_v1_compatibility(self, _bridge) -> None:
+            return None
+
+        def bind_market_data(self, _port) -> None:
+            return None
+
+        def bind_symbol_refresher(self, *_args, **_kwargs) -> None:
+            return None
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        def publish_event(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(
+        first_party_bootstrap_module,
+        "ensure_first_party_plugins_from_environment",
+        lambda **_kwargs: FirstPartyPluginBootstrapResult(
+            status="ready",
+            runtime_id="candlescope.pyne",
+            version="0.2.0",
+        ),
+    )
+    monkeypatch.setattr(
+        plugin_runtime_module,
+        "build_runtime_host_from_environment",
+        lambda **_kwargs: _Host(),
+    )
+    monkeypatch.setattr(
+        runtime_service_module,
+        "build_indicator_runtime_service_from_environment",
+        lambda **_kwargs: _Routing(),
+    )
+    import app.plugin_core_v2 as plugin_core_v2_module
+
+    monkeypatch.setattr(
+        plugin_core_v2_module,
+        "build_core_plugin_platform_from_environment",
+        lambda **_kwargs: _Platform(),
+    )
+    monkeypatch.setattr(
+        plugin_core_v2_module,
+        "build_management_guard_from_environment",
+        lambda **_kwargs: object(),
+    )
 
     asyncio.run(main_module.startup_event())
     assert events == ["data-manager", "catalog"]

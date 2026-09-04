@@ -129,5 +129,4 @@ def test_postgres_store_is_not_a_worker_pool_and_fastapi_stays_locked() -> None:
     assert "start_replay_runtime" not in source
     assert "app.replay" not in source
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()

@@ -311,14 +311,14 @@ def required_methods_for_plan(plan: tuple[FaultSpec, ...]) -> tuple[str, ...]:
 
 __all__ = [
     "ARCHIVER_PRECOMMIT_HOOK",
+    "REQUIRED_RUN_FAULT_METHODS",
+    "WRITER_PRECOMMIT_HOOK",
     "FaultActuator",
     "FaultMachineError",
     "FaultRecord",
     "FaultStatus",
     "QuietObservation",
-    "REQUIRED_RUN_FAULT_METHODS",
     "SoakFaultMachine",
-    "WRITER_PRECOMMIT_HOOK",
     "arm_precommit_hook",
     "precommit_hook_name",
     "required_methods_for_plan",

@@ -128,7 +128,9 @@ class PublicSoakReplayDriver:
                 "two scoped Replay Workers must be live before creating tasks",
                 details={"live_workers": workers},
             )
-        queried = await self._transport.cold_query_snapshot(pin.to_payload()["snapshot"])
+        queried = await self._transport.cold_query_snapshot(
+            pin.to_payload()["snapshot"]
+        )
         if queried.get("preference") not in {None, "cold"}:
             raise ReplaySoakError(
                 "QUERY_NOT_COLD",
@@ -246,7 +248,10 @@ class PublicSoakReplayDriver:
                 "COMMAND_NOT_IDEMPOTENT",
                 "command revision advanced after retry",
             )
-        if observation.cursor != retry.cursor or observation.state_hash != retry.state_hash:
+        if (
+            observation.cursor != retry.cursor
+            or observation.state_hash != retry.state_hash
+        ):
             raise ReplaySoakError(
                 "COMMAND_NOT_IDEMPOTENT",
                 "cursor or state hash advanced after retry",
@@ -260,8 +265,12 @@ class PublicSoakReplayDriver:
             )
         return observation
 
-    async def _create(self, name: str, pin: SnapshotPin, *, priority: int) -> ReplayTask:
-        payload = build_run_payload(self._manifest, pin, idempotency_key=name, priority=priority)
+    async def _create(
+        self, name: str, pin: SnapshotPin, *, priority: int
+    ) -> ReplayTask:
+        payload = build_run_payload(
+            self._manifest, pin, idempotency_key=name, priority=priority
+        )
         if "query_path" in payload:
             raise ReplaySoakError(
                 "QUERY_PATH_FORBIDDEN",
@@ -395,8 +404,8 @@ def new_command_id(prefix: str) -> str:
 
 
 __all__ = [
-    "CommandObservation",
     "FROZEN_IDEMPOTENT_COMMAND_ID",
+    "CommandObservation",
     "PublicSoakReplayDriver",
     "ReplaySoakError",
     "ReplayTask",

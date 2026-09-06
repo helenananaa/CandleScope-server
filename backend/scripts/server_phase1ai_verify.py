@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from pathlib import Path
 
 from app.server_runtime.public_soak_verify import SoakVerifyError, verify_evidence
 

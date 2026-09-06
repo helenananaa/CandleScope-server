@@ -534,9 +534,7 @@ def test_process_reverse_stop_order(tmp_path: Path) -> None:
         )
         await manager.stop_in_reverse([collector, api])
         stops = [
-            item["role"]
-            for item in manager.events
-            if item["event"] == "stop_sigterm"
+            item["role"] for item in manager.events if item["event"] == "stop_sigterm"
         ]
         assert stops == ["api", "collector"]
 
@@ -607,7 +605,12 @@ def _role_bodies(now_ms: int) -> dict[str, dict[str, object]]:
             "current_snapshot": snapshot,
             "updated_at_ms": now_ms,
         },
-        "query": {"ready": True, "status": "ready", "snapshot": snapshot, "updated_at_ms": now_ms},
+        "query": {
+            "ready": True,
+            "status": "ready",
+            "snapshot": snapshot,
+            "updated_at_ms": now_ms,
+        },
         "scheduler": {
             "ready": True,
             "pending": 1,
@@ -648,8 +651,13 @@ def test_sample_hash_chain_links_previous(tmp_path: Path) -> None:
     assert second.sequence == 2
     assert second.previous_sample_sha256 == first.sample_sha256
     assert first.payload_sha256 == second.payload_sha256
-    rebuilt = SoakSampler(_parsed_manifest(tmp_path / "other"), clock_ms=_Clock(1_700_000_000_000))
-    assert rebuilt.observe(_role_bodies(1_700_000_000_000)).sample_sha256 == first.sample_sha256
+    rebuilt = SoakSampler(
+        _parsed_manifest(tmp_path / "other"), clock_ms=_Clock(1_700_000_000_000)
+    )
+    assert (
+        rebuilt.observe(_role_bodies(1_700_000_000_000)).sample_sha256
+        == first.sample_sha256
+    )
 
 
 def test_sample_rejects_clock_rollback(tmp_path: Path) -> None:
@@ -749,7 +757,7 @@ def test_evidence_exclusive_create_and_hash_reread(tmp_path: Path) -> None:
     assert result["production_ready"] is False
     assert result["final_sample_sha256"] == record.sample_sha256
     assert Path(manifest.output.result_path).is_file()
-    with pytest.raises(Exception):
+    with pytest.raises(FileExistsError):
         EvidenceWriter(
             manifest,
             mode=MODE_DEVELOPMENT_SMOKE,
@@ -810,7 +818,9 @@ class _FakeReplayTransport:
         self._active = 0
         self.created_payloads: list[dict[str, object]] = []
 
-    async def cold_query_snapshot(self, snapshot: dict[str, object]) -> dict[str, object]:
+    async def cold_query_snapshot(
+        self, snapshot: dict[str, object]
+    ) -> dict[str, object]:
         del snapshot
         return {**self.snapshot, "preference": "cold"}
 
@@ -995,7 +1005,7 @@ class _FakeActuator:
         self.offset = 10
 
     async def trigger(self, spec: object) -> None:
-        self.triggered.append(getattr(spec, "method"))
+        self.triggered.append(spec.method)
 
     async def trigger_observed(self, spec: object) -> bool:
         del spec
@@ -1165,7 +1175,9 @@ def test_fault_run_plan_executes_six_in_order(tmp_path: Path) -> None:
             "scheduler_restart",
             "api_restart",
         ]
-        assert all(item.status is FaultStatus.QUIET_CHECKPOINT_VERIFIED for item in completed)
+        assert all(
+            item.status is FaultStatus.QUIET_CHECKPOINT_VERIFIED for item in completed
+        )
 
     asyncio.run(run())
 
@@ -1185,8 +1197,9 @@ def test_fault_evidence_after_plan_index_advances() -> None:
     )
 
     class _Machine:
-        records = [FaultRecord(spec)]
-        _index = 1
+        def __init__(self) -> None:
+            self.records = [FaultRecord(spec)]
+            self._index = 1
 
     evidence = _fault_evidence(_Machine())
     assert evidence["fault_id"] == "worker-sigkill"
@@ -1198,15 +1211,18 @@ def test_cli_refuses_relative_path_and_existing_output(
     from scripts.server_phase1ai_public_soak import main as soak_main
 
     output = tmp_path / "out.json"
-    assert soak_main(
-        [
-            "development-smoke",
-            "--manifest",
-            "phase1ai-smoke-manifest.json",
-            "--output",
-            str(output),
-        ]
-    ) == 1
+    assert (
+        soak_main(
+            [
+                "development-smoke",
+                "--manifest",
+                "phase1ai-smoke-manifest.json",
+                "--output",
+                str(output),
+            ]
+        )
+        == 1
+    )
     relative = json.loads(capsys.readouterr().out)
     assert relative["code"] == "RELATIVE_PATH"
     assert relative["twenty_four_hour_public_continuity"] is False
@@ -1215,15 +1231,18 @@ def test_cli_refuses_relative_path_and_existing_output(
     existing.write_text("{}", encoding="utf-8")
     manifest = tmp_path / "manifest.json"
     manifest.write_text("{}", encoding="utf-8")
-    assert soak_main(
-        [
-            "development-smoke",
-            "--manifest",
-            str(manifest),
-            "--output",
-            str(existing),
-        ]
-    ) == 1
+    assert (
+        soak_main(
+            [
+                "development-smoke",
+                "--manifest",
+                str(manifest),
+                "--output",
+                str(existing),
+            ]
+        )
+        == 1
+    )
     exists = json.loads(capsys.readouterr().out)
     assert exists["code"] == "OUTPUT_EXISTS"
 
@@ -1236,6 +1255,8 @@ def test_cli_run_refuses_missing_dual_switch_and_short_duration(
     from scripts.server_phase1ai_public_soak import (
         FAULT_INJECTION_ENV,
         PUBLIC_SOAK_ENV,
+    )
+    from scripts.server_phase1ai_public_soak import (
         main as soak_main,
     )
 
@@ -1308,8 +1329,3 @@ def test_cli_verifier_recomputes_hashes_from_files(tmp_path: Path) -> None:
         )
         == 0
     )
-
-
-
-
-

@@ -20,9 +20,7 @@ def test_development_smoke_cli_writes_non_24h_result(tmp_path: Path) -> None:
     if not manifest or not output:
         pytest.skip("smoke manifest/output paths are required")
     del tmp_path
-    code = soak_main(
-        ["development-smoke", "--manifest", manifest, "--output", output]
-    )
+    code = soak_main(["development-smoke", "--manifest", manifest, "--output", output])
     result = json.loads(Path(output).read_text(encoding="utf-8"))
     assert result["twenty_four_hour_public_continuity"] is False
     assert result["production_ready"] is False

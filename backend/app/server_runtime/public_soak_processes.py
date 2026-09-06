@@ -420,7 +420,7 @@ async def _pump_bounded(
     max_bytes: int,
 ) -> None:
     written = 0
-    with Path(path).open("wb") as handle:
+    with Path(path).open("wb") as handle:  # noqa: ASYNC230
         if stream is None:
             return
         while True:
@@ -443,14 +443,18 @@ async def _default_health_probe(url: str) -> tuple[int, bytes]:
     if parsed_host not in LOOPBACK_HOSTS:
         raise RoleProcessError("HEALTH_URL_UNSAFE", "health probe host is not loopback")
     timeout = aiohttp.ClientTimeout(total=0.5)
-    async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
-        async with session.get(url, allow_redirects=False) as response:
-            return response.status, await response.read()
+    async with (
+        aiohttp.ClientSession(timeout=timeout, trust_env=False) as session,
+        session.get(url, allow_redirects=False) as response,
+    ):
+        return response.status, await response.read()
 
 
 def _env_key(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
-        raise RoleProcessError("INVALID_ENV_KEYS", f"{field} must be a non-empty string")
+        raise RoleProcessError(
+            "INVALID_ENV_KEYS", f"{field} must be a non-empty string"
+        )
     text = value.strip()
     allowed = frozenset(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-"
@@ -544,9 +548,7 @@ async def _bootstrap_postgres() -> None:
         await psycopg.AsyncConnection.connect(admin_dsn) as connection,
         connection.cursor() as cursor,
     ):
-        await cursor.execute(
-            "TRUNCATE TABLE candlescope_market_stream_lease"
-        )
+        await cursor.execute("TRUNCATE TABLE candlescope_market_stream_lease")
     await PostgresQueryControlMigrator(
         admin_dsn,
         migration_path=(
@@ -582,13 +584,13 @@ def _required_env(name: str) -> str:
 
 __all__ = [
     "INIT_ORDER",
+    "START_ORDER",
+    "STOP_ORDER",
     "InitCommand",
     "ManagedRole",
     "RoleProcessError",
     "RoleProcessManager",
     "RoleSpec",
-    "START_ORDER",
-    "STOP_ORDER",
     "bootstrap_postgres_main",
     "role_environment",
 ]

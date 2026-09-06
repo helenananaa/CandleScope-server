@@ -19,11 +19,11 @@ from app.server_runtime.public_soak_manifest import (
     MODE_DEVELOPMENT_SMOKE,
     MODE_RUN,
     PUBLIC_SOAK_DURATION_MS,
-    PublicSoakManifest,
-    PublicSoakManifestError,
     SECRET_KEY_RE,
     SECRET_VALUE_RE,
     USERINFO_RE,
+    PublicSoakManifest,
+    PublicSoakManifestError,
 )
 
 SAMPLE_SCHEMA_VERSION = "candlescope.server-phase1ai-sample.v1"
@@ -164,7 +164,9 @@ def build_sample_record(
         raise SoakObservationError("INVALID_SAMPLE_SEQUENCE", "sequence must be >= 1")
     redacted = redact_for_evidence(dict(payload), max_bytes=max_bytes)
     if not isinstance(redacted, dict):
-        raise SoakObservationError("HEALTH_JSON_INVALID", "sample payload must be an object")
+        raise SoakObservationError(
+            "HEALTH_JSON_INVALID", "sample payload must be an object"
+        )
     payload_sha256 = sha256_canonical(redacted)
     previous = previous_sample_sha256 or GENESIS_SHA256
     unsigned = {
@@ -443,9 +445,7 @@ def _verify_sample_chain(samples: list[dict[str, object]]) -> None:
                 "SAMPLE_CHAIN_BROKEN",
                 "sample sequence is not contiguous",
             )
-        unsigned = {
-            key: value for key, value in item.items() if key != "sample_sha256"
-        }
+        unsigned = {key: value for key, value in item.items() if key != "sample_sha256"}
         expected = sha256_canonical(unsigned)
         if item.get("sample_sha256") != expected:
             raise SoakObservationError(
@@ -551,8 +551,7 @@ async def execute_public_soak(
             repo_root=repo_root,
         )
         environments = {
-            spec.name: _role_child_env(spec.name, environ, manifest)
-            for spec in specs
+            spec.name: _role_child_env(spec.name, environ, manifest) for spec in specs
         }
         data_plane = [spec for spec in specs if spec.name != "api"]
         api_specs = [spec for spec in specs if spec.name == "api"]
@@ -601,8 +600,10 @@ async def execute_public_soak(
                     repo_root=repo_root,
                 )
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as stop_exc:  # noqa: BLE001
+            if error_code is None:
+                error_code = type(stop_exc).__name__
+                error_message = str(stop_exc)
     elapsed_ms = max(0, clock() - started_at_ms)
     return writer.finalize(
         phase_passed=phase_passed,
@@ -911,7 +912,9 @@ def _role_child_env(
     )
     env["PYTHONUNBUFFERED"] = "1"
     env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_DATA_EPOCH"] = manifest.run_id
-    env["CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_KAFKA_GROUP_ID"] = f"{manifest.run_id}-writer"
+    env["CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_KAFKA_GROUP_ID"] = (
+        f"{manifest.run_id}-writer"
+    )
     env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_KAFKA_GROUP_ID"] = (
         f"{manifest.run_id}-archiver"
     )
@@ -955,7 +958,10 @@ class ProcessFaultActuator:
         self.last_bodies: dict[str, dict[str, object]] = {}
 
     async def trigger(self, spec) -> None:
-        from app.server_runtime.soak_faults import arm_precommit_hook, precommit_hook_name
+        from app.server_runtime.soak_faults import (
+            arm_precommit_hook,
+            precommit_hook_name,
+        )
 
         if precommit_hook_name(spec.method):
             arm_precommit_hook(
@@ -1048,14 +1054,12 @@ class ProcessFaultActuator:
         return {}
 
 
-
-
 __all__ = [
-    "EvidenceWriter",
     "GENESIS_SHA256",
-    "ProcessFaultActuator",
     "RESULT_SCHEMA_VERSION",
     "SAMPLE_SCHEMA_VERSION",
+    "EvidenceWriter",
+    "ProcessFaultActuator",
     "SampleRecord",
     "SoakObservationError",
     "SoakSampler",

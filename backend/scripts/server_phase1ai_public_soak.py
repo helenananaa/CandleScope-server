@@ -94,13 +94,14 @@ def preflight(
         raise PublicSoakCliError("RELATIVE_PATH", "output path must be absolute")
     if output_file.exists():
         raise PublicSoakCliError("OUTPUT_EXISTS", "output already exists")
-    if mode == MODE_RUN:
-        if values.get(PUBLIC_SOAK_ENV) != "1" or values.get(FAULT_INJECTION_ENV) != "1":
-            raise PublicSoakCliError(
-                "DUAL_SWITCH_MISSING",
-                "run requires CANDLESCOPE_PHASE1AI_PUBLIC_SOAK=1 and "
-                "CANDLESCOPE_PHASE1AI_FAULT_INJECTION=1",
-            )
+    if mode == MODE_RUN and (
+        values.get(PUBLIC_SOAK_ENV) != "1" or values.get(FAULT_INJECTION_ENV) != "1"
+    ):
+        raise PublicSoakCliError(
+            "DUAL_SWITCH_MISSING",
+            "run requires CANDLESCOPE_PHASE1AI_PUBLIC_SOAK=1 and "
+            "CANDLESCOPE_PHASE1AI_FAULT_INJECTION=1",
+        )
     try:
         manifest = load_manifest(manifest_file, mode=mode)
     except PublicSoakManifestError as exc:

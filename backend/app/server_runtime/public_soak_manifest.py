@@ -9,10 +9,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass, fields, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.replay.canonical import canonical_json
@@ -376,7 +377,9 @@ def parse_manifest(
 
 def _parse_infrastructure(raw: object) -> InfrastructureEndpoints:
     body = _object(raw, "infrastructure")
-    unknown = sorted(set(body) - {item.name for item in fields(InfrastructureEndpoints)})
+    unknown = sorted(
+        set(body) - {item.name for item in fields(InfrastructureEndpoints)}
+    )
     if unknown:
         raise PublicSoakManifestError(
             "UNKNOWN_MANIFEST_FIELD",
@@ -605,7 +608,9 @@ def _parse_fault_plan(
         missing = [
             method for method in REQUIRED_RUN_FAULT_METHODS if method not in methods
         ]
-        extra = [method for method in methods if method not in REQUIRED_RUN_FAULT_METHODS]
+        extra = [
+            method for method in methods if method not in REQUIRED_RUN_FAULT_METHODS
+        ]
         if missing or extra or len(methods) != len(REQUIRED_RUN_FAULT_METHODS):
             raise PublicSoakManifestError(
                 "REQUIRED_FAULTS_MISSING",
@@ -758,13 +763,14 @@ def _reject_secrets(payload: object, *, path: str = "$") -> None:
         for index, child in enumerate(payload):
             _reject_secrets(child, path=f"{path}[{index}]")
         return
-    if isinstance(payload, str):
-        if SECRET_VALUE_RE.search(payload) or USERINFO_RE.search(payload):
-            raise PublicSoakManifestError(
-                "SECRET_IN_MANIFEST",
-                "manifest must not contain token, secret, password, or DSN values",
-                details={"path": path},
-            )
+    if isinstance(payload, str) and (
+        SECRET_VALUE_RE.search(payload) or USERINFO_RE.search(payload)
+    ):
+        raise PublicSoakManifestError(
+            "SECRET_IN_MANIFEST",
+            "manifest must not contain token, secret, password, or DSN values",
+            details={"path": path},
+        )
 
 
 def _object(value: object, field: str) -> dict[str, Any]:
@@ -860,25 +866,25 @@ _MANIFEST_KEYS = frozenset(
 
 
 __all__ = [
-    "AcceptanceThresholds",
     "FAULT_METHOD_TARGETS",
-    "FaultSpec",
     "FROZEN_EVENT_KIND",
     "FROZEN_EXCHANGE",
     "FROZEN_MARKET",
     "FROZEN_SYMBOL",
-    "InfrastructureEndpoints",
     "MODE_DEVELOPMENT_SMOKE",
     "MODE_RUN",
-    "OutputPolicy",
     "PUBLIC_SOAK_DURATION_MS",
-    "PublicSoakManifest",
-    "PublicSoakManifestError",
     "REQUIRED_RUN_FAULT_METHODS",
-    "ReplayWorkloadLimits",
     "SCHEMA_VERSION",
     "SMOKE_MIN_DURATION_MS",
     "SOURCE_BINANCE",
+    "AcceptanceThresholds",
+    "FaultSpec",
+    "InfrastructureEndpoints",
+    "OutputPolicy",
+    "PublicSoakManifest",
+    "PublicSoakManifestError",
+    "ReplayWorkloadLimits",
     "load_manifest",
     "parse_manifest",
 ]

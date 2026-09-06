@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from app.replay.canonical import canonical_json
 from app.server_runtime.public_soak import (
@@ -110,7 +111,9 @@ def verify_evidence(
         "final_sample_sha256": final_hash,
         "sample_count": len(samples),
         "phase_passed": result.get("phase_passed") is True,
-        "twenty_four_hour_public_continuity": False if mode == MODE_DEVELOPMENT_SMOKE else continuity,
+        "twenty_four_hour_public_continuity": False
+        if mode == MODE_DEVELOPMENT_SMOKE
+        else continuity,
         "production_ready": False,
         "mode": mode,
     }
@@ -122,7 +125,9 @@ def _verify_chain(samples: list[dict[str, object]]) -> str:
     final_hash = GENESIS_SHA256
     for item in samples:
         if item.get("sequence") != expected_sequence:
-            raise SoakVerifyError("SAMPLE_CHAIN_BROKEN", "sample sequence is not contiguous")
+            raise SoakVerifyError(
+                "SAMPLE_CHAIN_BROKEN", "sample sequence is not contiguous"
+            )
         unsigned = {key: value for key, value in item.items() if key != "sample_sha256"}
         expected = sha256_canonical(unsigned)
         if item.get("sample_sha256") != expected:
@@ -156,7 +161,9 @@ def _load_samples(path: Path) -> list[dict[str, object]]:
                 "sample file contains invalid JSON",
             ) from exc
         if not isinstance(payload, dict):
-            raise SoakVerifyError("HEALTH_JSON_INVALID", "sample line must be an object")
+            raise SoakVerifyError(
+                "HEALTH_JSON_INVALID", "sample line must be an object"
+            )
         records.append(payload)
     return records
 

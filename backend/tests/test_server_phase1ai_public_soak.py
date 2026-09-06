@@ -961,6 +961,10 @@ def test_replay_pin_from_query_events() -> None:
                 "payload": {"agg_trade_id": 42},
             },
             {
+                "event_time_ms": 1_700_000_000_043,
+                "payload": {"agg_trade_id": 43},
+            },
+            {
                 "event_time_ms": 1_700_000_000_044,
                 "payload": {"agg_trade_id": 44},
             },
@@ -969,6 +973,29 @@ def test_replay_pin_from_query_events() -> None:
     assert pin.expected_first_agg_trade_id == 42
     assert pin.expected_last_agg_trade_id == 44
     assert pin.row_count == 3
+
+
+def test_replay_pin_uses_consecutive_prefix_only() -> None:
+    from app.server_runtime.public_soak_replay import pin_from_query_events
+
+    pin = pin_from_query_events(
+        _pin_payload()["snapshot"],
+        [
+            {
+                "event_time_ms": 1_700_000_000_042,
+                "payload": {"agg_trade_id": 42},
+            },
+            {
+                "event_time_ms": 1_700_000_000_044,
+                "payload": {"agg_trade_id": 44},
+            },
+        ],
+    )
+    assert pin.expected_first_agg_trade_id == 42
+    assert pin.expected_last_agg_trade_id == 42
+    assert pin.row_count == 1
+    assert pin.start_event_time_ms == 1_700_000_000_042
+    assert pin.end_event_time_ms == 1_700_000_000_042
 
 
 def test_replay_rejects_latest_and_query_path() -> None:

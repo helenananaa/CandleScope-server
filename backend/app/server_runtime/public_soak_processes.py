@@ -573,6 +573,27 @@ async def _bootstrap_postgres() -> None:
         migration_path=DEFAULT_SCHEDULER_MIGRATION_PATH,
         runtime_login_role=replay_role,
     )
+    async with (
+        await psycopg.AsyncConnection.connect(admin_dsn) as connection,
+        connection.cursor() as cursor,
+    ):
+        await cursor.execute(
+            """
+            TRUNCATE TABLE
+                candlescope_replay_scheduler_command,
+                candlescope_replay_scheduler_assignment,
+                candlescope_replay_scheduler_request,
+                candlescope_replay_scheduler_worker,
+                candlescope_replay_scheduler_audit,
+                candlescope_replay_command_result,
+                candlescope_replay_event_outbox,
+                candlescope_replay_mutation,
+                candlescope_replay_session_state,
+                candlescope_replay_session,
+                candlescope_replay_session_lease
+            CASCADE
+            """
+        )
 
 
 def _required_env(name: str) -> str:

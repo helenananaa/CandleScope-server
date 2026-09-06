@@ -532,11 +532,18 @@ def pin_from_query_events(
     if not events:
         raise ReplaySoakError("INVALID_SNAPSHOT", "cold query returned no events")
     first = events[0]
-    last = events[-1]
     first_id = _agg_trade_id(first)
-    last_id = _agg_trade_id(last)
     start_ms = int(first.get("event_time_ms") or 0)
-    end_ms = int(last.get("event_time_ms") or start_ms)
+    last_id = first_id
+    end_ms = start_ms
+    # Pin only a consecutive agg_trade prefix. A sparse page's inclusive id
+    # span would force the Worker to scan a much larger cold window.
+    for event in events[1:]:
+        trade_id = _agg_trade_id(event)
+        if trade_id != last_id + 1:
+            break
+        last_id = trade_id
+        end_ms = int(event.get("event_time_ms") or end_ms)
     row_count = last_id - first_id + 1
     return parse_snapshot_pin(
         {

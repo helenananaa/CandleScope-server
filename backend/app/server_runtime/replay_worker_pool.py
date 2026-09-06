@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Callable, Mapping
 
 from app.replay.broker.models import BrokerConfig
@@ -128,9 +129,18 @@ class ReplayWorkerPoolLoop:
             except ReplaySessionLeaseFencedError:
                 await self._abandon_claim()
             except ReplayDomainError as exc:
-                if exc.code is ReplayErrorCode.PERSISTENCE_DEGRADED:
-                    await self._abandon_claim()
-            except Exception:  # noqa: BLE001
+                print(
+                    f"replay-worker-pool: {exc.code}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                await self._abandon_claim()
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"replay-worker-pool: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 await self._abandon_claim()
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=poll)

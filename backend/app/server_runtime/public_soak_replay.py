@@ -240,14 +240,6 @@ class PublicSoakReplayDriver:
                 expected_revision=observed["replay-b-play"].revision,
             ),
         )
-        observed["replay-b-resume"] = await self._command(
-            workload.replay_b.session_id,
-            _typed_command(
-                f"{workload.replay_b.run_id}-resume",
-                CommandType.PLAY,
-                expected_revision=observed["replay-b-pause"].revision,
-            ),
-        )
         queued = await self._refresh(workload.replay_queued)
         if queued.state not in QUEUED_STATES:
             raise ReplaySoakError(

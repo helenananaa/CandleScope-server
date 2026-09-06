@@ -783,7 +783,7 @@ async def _start_replay_workload(
     commands = await driver.drive_commands(workload)
     await driver.probe_idempotency(
         workload,
-        expected_revision=commands["replay-b-resume"].revision,
+        expected_revision=commands["replay-b-pause"].revision,
     )
     if workload.replay_a.session_id is None:
         raise SoakObservationError("SESSION_NOT_ASSIGNED", "replay-a has no session")

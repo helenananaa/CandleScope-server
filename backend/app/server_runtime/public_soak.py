@@ -538,6 +538,7 @@ async def execute_public_soak(
     phase_passed = False
     replay_extra: dict[str, object] = {}
     takeover_observed = False
+    actuator = None
     try:
         _compose_up(manifest, environ)
         await _run_inits(
@@ -611,6 +612,8 @@ async def execute_public_soak(
         error_code = getattr(exc, "code", type(exc).__name__)
         error_message = str(exc)
         phase_passed = False
+        if actuator is not None:
+            takeover_observed = bool(actuator.takeover_observed)
     finally:
         try:
             await manager.stop_in_reverse(
@@ -1120,7 +1123,7 @@ def _role_child_env(
     env.setdefault("CANDLESCOPE_SERVER_REPLAY_SCHEDULER_HEARTBEAT_TTL_MS", "8000")
     env.setdefault("CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_REQUEST_TIMEOUT_MS", "60000")
     env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_DATA_EPOCH"] = manifest.run_id
-    env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_SEGMENT_EVENT_COUNT"] = "500"
+    env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_SEGMENT_EVENT_COUNT"] = "100"
     env["CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_KAFKA_GROUP_ID"] = (
         f"{manifest.run_id}-writer"
     )

@@ -1170,6 +1170,28 @@ def test_fault_run_plan_executes_six_in_order(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_fault_evidence_after_plan_index_advances() -> None:
+    from app.server_runtime.public_soak import _fault_evidence
+    from app.server_runtime.public_soak_manifest import FaultSpec
+    from app.server_runtime.soak_faults import FaultRecord
+
+    spec = FaultSpec(
+        fault_id="worker-sigkill",
+        target_role="worker_a",
+        method="worker_sigkill",
+        scheduled_elapsed_ms=1_000,
+        observation_timeout_ms=1_000,
+        recovery_timeout_ms=1_000,
+    )
+
+    class _Machine:
+        records = [FaultRecord(spec)]
+        _index = 1
+
+    evidence = _fault_evidence(_Machine())
+    assert evidence["fault_id"] == "worker-sigkill"
+
+
 def test_cli_refuses_relative_path_and_existing_output(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

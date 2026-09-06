@@ -581,11 +581,7 @@ async def execute_public_soak(
                     process_exits={
                         name: role.exit_code for name, role in manager.roles.items()
                     },
-                    last_fault=(
-                        faults.records[faults._index].to_evidence()
-                        if faults.records
-                        else {}
-                    ),
+                    last_fault=_fault_evidence(faults),
                     raw_bytes_by_role=raw_sizes,
                 )
                 writer.append_sample(sampler.records[-1], fsync=False)
@@ -704,6 +700,16 @@ def build_role_specs(
             )
         )
     return specs
+
+
+def _fault_evidence(machine) -> dict[str, object]:
+    records = getattr(machine, "records", None) or []
+    if not records:
+        return {}
+    index = int(getattr(machine, "_index", 0) or 0)
+    if index >= len(records):
+        return records[-1].to_evidence()
+    return records[index].to_evidence()
 
 
 def repo_root_from_manifest(manifest: PublicSoakManifest) -> Path:

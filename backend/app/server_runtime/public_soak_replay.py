@@ -771,7 +771,9 @@ async def assignment_worker_id(dsn: str, session_id: str) -> str | None:
             """
             SELECT worker_id
             FROM candlescope_replay_scheduler_assignment
-            WHERE session_id = %s AND active IS TRUE
+            WHERE session_id = %s
+            ORDER BY active DESC, attempt DESC, created_at DESC
+            LIMIT 1
             """,
             (session_id,),
         )

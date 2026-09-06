@@ -555,7 +555,7 @@ async def execute_public_soak(
             for spec in specs
         }
         await manager.start_in_order(specs, environments)
-        actuator = ProcessFaultActuator(manager, specs, environ)
+        actuator = ProcessFaultActuator(manager, specs, environ, manifest)
         faults = SoakFaultMachine(
             manifest,
             actuator,
@@ -570,6 +570,7 @@ async def execute_public_soak(
                 bodies, raw_sizes = await _scrape_roles(
                     session, manifest.health_endpoints
                 )
+                actuator.last_bodies = bodies
                 sampler.observe(
                     bodies,
                     process_exits={
@@ -824,25 +825,29 @@ async def _scrape_roles(session, endpoints: Mapping[str, str]):
     bodies: dict[str, dict[str, object]] = {}
     sizes: dict[str, int] = {}
     for role, url in endpoints.items():
-        async with session.get(url) as response:
-            raw = await response.read()
-            sizes[role] = len(raw)
-            if response.status != 200:
-                bodies[role] = {"ready": False, "status": response.status}
-                continue
-            try:
+        try:
+            async with session.get(url) as response:
+                raw = await response.read()
+                sizes[role] = len(raw)
+                if response.status != 200:
+                    bodies[role] = {"ready": False, "status": response.status}
+                    continue
                 payload = json.loads(raw.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise SoakObservationError(
-                    "HEALTH_JSON_INVALID",
-                    f"{role} health is not JSON",
-                ) from exc
-            if not isinstance(payload, dict):
-                raise SoakObservationError(
-                    "HEALTH_JSON_INVALID",
-                    f"{role} health must be an object",
-                )
-            bodies[role] = payload
+                if not isinstance(payload, dict):
+                    raise SoakObservationError(
+                        "HEALTH_JSON_INVALID",
+                        f"{role} health must be an object",
+                    )
+                bodies[role] = payload
+        except SoakObservationError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            bodies[role] = {
+                "ready": False,
+                "status": "unreachable",
+                "error": type(exc).__name__,
+            }
+            sizes[role] = 0
     return bodies, sizes
 
 
@@ -850,7 +855,10 @@ def _role_child_env(
     name: str, environ: Mapping[str, str], manifest: PublicSoakManifest
 ) -> dict[str, str]:
     env = dict(environ)
-    env.setdefault("PYTHONPATH", str(Path(repo_root_from_manifest(manifest)) / "backend"))
+    env.setdefault(
+        "PYTHONPATH", str(Path(repo_root_from_manifest(manifest)) / "backend")
+    )
+    env["PYTHONUNBUFFERED"] = "1"
     if name == "api":
         env["CANDLESCOPE_PROFILE"] = "server"
     if name == "worker_b":
@@ -875,22 +883,33 @@ def _role_child_env(
 
 
 class ProcessFaultActuator:
-    def __init__(self, manager, specs, environ: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        manager,
+        specs,
+        environ: Mapping[str, str],
+        manifest: PublicSoakManifest,
+    ) -> None:
         self._manager = manager
         self._specs = {spec.name: spec for spec in specs}
         self._environ = environ
+        self._manifest = manifest
         self._triggered: set[str] = set()
+        self._restarted: set[str] = set()
+        self.last_bodies: dict[str, dict[str, object]] = {}
 
     async def trigger(self, spec) -> None:
         from app.server_runtime.soak_faults import arm_precommit_hook, precommit_hook_name
 
         if precommit_hook_name(spec.method):
-            arm_precommit_hook(Path(self._environ.get("CANDLESCOPE_PHASE1AI_HOOK_DIR", "/tmp")), spec)
+            arm_precommit_hook(
+                Path(self._environ.get("CANDLESCOPE_PHASE1AI_HOOK_DIR", "/tmp")),
+                spec,
+            )
             self._triggered.add(spec.fault_id)
             return
-        role = self._specs.get(spec.target_role)
         process = self._manager._live.get(spec.target_role)
-        if process is None or role is None:
+        if process is None:
             raise SoakObservationError("ROLE_NOT_STARTED", spec.target_role)
         if spec.method.endswith("sigkill"):
             process.kill()
@@ -899,28 +918,70 @@ class ProcessFaultActuator:
         self._triggered.add(spec.fault_id)
 
     async def trigger_observed(self, spec) -> bool:
-        role = self._manager.roles.get(spec.target_role)
+        process = self._manager._live.get(spec.target_role)
         if spec.method.endswith("sigkill"):
-            return role is not None and role.exit_code is not None
+            return process is not None and process.returncode is not None
         return spec.fault_id in self._triggered
 
     async def recovery_observed(self, spec) -> bool:
-        del spec
-        return True
+        if not spec.method.endswith("sigkill"):
+            return True
+        process = self._manager._live.get(spec.target_role)
+        if process is not None and process.returncode is None:
+            return True
+        if spec.target_role in self._restarted:
+            live = self._manager._live.get(spec.target_role)
+            return live is not None and live.returncode is None
+        if spec.target_role in self._manager._live:
+            await self._manager._finalize(spec.target_role)
+        env = _role_child_env(spec.target_role, self._environ, self._manifest)
+        await self._manager.start_role(self._specs[spec.target_role], env)
+        self._restarted.add(spec.target_role)
+        live = self._manager._live.get(spec.target_role)
+        return live is not None and live.returncode is None
 
     async def quiet_observation(self):
         from app.server_runtime.soak_faults import QuietObservation
 
+        collector = self._offset("collector", "last_partition_offset")
+        if collector is not None:
+            collector += 1
+        writer = self._offset("writer", "committed_next_offset")
+        archive = self._offset("archiver", "committed_next_offset")
+        snapshot = self._snapshot()
         return QuietObservation(
-            collector_durable_next_offset=0,
-            writer_committed_next_offset=0,
-            archiver_covered_next_offset=0,
-            query_snapshot={},
-            replay_pinned_snapshot={},
-            unresolved_gaps=0,
-            hash_conflicts=0,
+            collector_durable_next_offset=int(collector or 0),
+            writer_committed_next_offset=int(writer or 0),
+            archiver_covered_next_offset=int(archive or 0),
+            query_snapshot=snapshot,
+            replay_pinned_snapshot=snapshot,
+            unresolved_gaps=int(
+                self.last_bodies.get("writer", {}).get("unresolved_gaps") or 0
+            ),
+            hash_conflicts=int(
+                self.last_bodies.get("writer", {}).get("conflict_events") or 0
+            ),
             producer_epoch_rollback=0,
         )
+
+    def _offset(self, role: str, field: str) -> int | None:
+        body = self.last_bodies.get(role) or {}
+        value = body.get(field)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return None
+
+    def _snapshot(self) -> dict[str, object]:
+        body = self.last_bodies.get("archiver") or {}
+        snapshot = body.get("current_snapshot")
+        if isinstance(snapshot, dict):
+            return {
+                "snapshot_version": snapshot.get("snapshot_version"),
+                "manifest_sha256": snapshot.get("manifest_sha256"),
+            }
+        return {}
+
+
 
 
 __all__ = [

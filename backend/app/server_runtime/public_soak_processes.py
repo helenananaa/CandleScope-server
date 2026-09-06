@@ -540,6 +540,13 @@ async def _bootstrap_postgres() -> None:
                 )
     await PostgresStreamLeaseStore(admin_dsn).initialize_schema()
     await PostgresReplaySessionLeaseStore(admin_dsn).initialize_schema()
+    async with (
+        await psycopg.AsyncConnection.connect(admin_dsn) as connection,
+        connection.cursor() as cursor,
+    ):
+        await cursor.execute(
+            "TRUNCATE TABLE candlescope_market_stream_lease"
+        )
     await PostgresQueryControlMigrator(
         admin_dsn,
         migration_path=(

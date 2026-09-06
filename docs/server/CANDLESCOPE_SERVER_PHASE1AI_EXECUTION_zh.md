@@ -71,8 +71,12 @@ Binance `fstream` 可达。系统时钟 NTP 同步。
 两次成功运行中：Collector 从公网 Binance 发布 `BTCUSDT` `aggTrade`；
 Writer 写入 ClickHouse；Archiver 发布 MinIO immutable snapshot；
 Query `/health/ready` 与 Server API `/health/ready` 返回 `ready=true` 且
-`production_ready=false`；计划内 Worker SIGKILL 后 quiet checkpoint 收敛。
-结果 schema 明确 `twenty_four_hour_public_continuity=false`。
+`production_ready=false`；计划内 Worker SIGKILL 后进程被重启且 quiet
+checkpoint 收敛。结果 schema 明确 `twenty_four_hour_public_continuity=false`。
+
+Live controller 尚未在成功 smoke 中通过 Server API 创建 `replay-a` /
+`replay-b` / `replay-queued`，也未在真实链路上证明 command-id 幂等。
+这些行为有单元测试（`PublicSoakReplayDriver`），但还不是 live smoke 证据。
 
 这不是 24 小时连续性证明，也不是生产发布授权。
 

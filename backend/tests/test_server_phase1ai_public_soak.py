@@ -561,3 +561,223 @@ def test_process_does_not_keep_secrets(tmp_path: Path) -> None:
 
     asyncio.run(run())
 
+
+class _Clock:
+    def __init__(self, now: int) -> None:
+        self.now = now
+
+    def __call__(self) -> int:
+        return self.now
+
+
+def _parsed_manifest(tmp_path: Path, *, mode: str = MODE_DEVELOPMENT_SMOKE):
+    return parse_manifest(_base_payload(tmp_path, mode=mode), mode=mode)
+
+
+def _role_bodies(now_ms: int) -> dict[str, dict[str, object]]:
+    snapshot = {
+        "snapshot_version": 4,
+        "manifest_sha256": "a" * 64,
+        "manifest_uri": "s3://candlescope-archive/snapshot-4.json",
+        "data_epoch": "epoch-1",
+    }
+    return {
+        "collector": {
+            "ready": True,
+            "state": "leader",
+            "owner_id": "collector-a",
+            "producer_epoch": 1,
+            "last_partition_offset": 9,
+            "updated_at_ms": now_ms,
+        },
+        "writer": {
+            "ready": True,
+            "state": "running",
+            "owner_id": "writer-a",
+            "committed_next_offset": 10,
+            "duplicate_events": 0,
+            "conflict_events": 0,
+            "updated_at_ms": now_ms,
+        },
+        "archiver": {
+            "ready": True,
+            "state": "running",
+            "owner_id": "archiver-a",
+            "committed_next_offset": 10,
+            "current_snapshot": snapshot,
+            "updated_at_ms": now_ms,
+        },
+        "query": {"ready": True, "status": "ready", "snapshot": snapshot, "updated_at_ms": now_ms},
+        "scheduler": {
+            "ready": True,
+            "pending": 1,
+            "running": 2,
+            "live_workers": 2,
+            "updated_at_ms": now_ms,
+        },
+        "worker_a": {
+            "ready": True,
+            "state": "ready",
+            "owner_id": "worker-a",
+            "fencing_epoch": 1,
+            "active_actors": 1,
+            "updated_at_ms": now_ms,
+        },
+        "worker_b": {
+            "ready": True,
+            "state": "ready",
+            "owner_id": "worker-b",
+            "fencing_epoch": 1,
+            "active_actors": 1,
+            "updated_at_ms": now_ms,
+        },
+        "api": {"ready": True, "status": "ready", "updated_at_ms": now_ms},
+    }
+
+
+def test_sample_hash_chain_links_previous(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import SoakSampler
+
+    clock = _Clock(1_700_000_000_000)
+    sampler = SoakSampler(_parsed_manifest(tmp_path), clock_ms=clock)
+    bodies = _role_bodies(clock.now)
+    first = sampler.observe(bodies)
+    clock.now += 1_000
+    second = sampler.observe(bodies)
+    assert first.sequence == 1
+    assert second.sequence == 2
+    assert second.previous_sample_sha256 == first.sample_sha256
+    assert first.payload_sha256 == second.payload_sha256
+    rebuilt = SoakSampler(_parsed_manifest(tmp_path / "other"), clock_ms=_Clock(1_700_000_000_000))
+    assert rebuilt.observe(_role_bodies(1_700_000_000_000)).sample_sha256 == first.sample_sha256
+
+
+def test_sample_rejects_clock_rollback(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import SoakObservationError, SoakSampler
+
+    clock = _Clock(1_700_000_000_000)
+    sampler = SoakSampler(_parsed_manifest(tmp_path), clock_ms=clock)
+    sampler.observe(_role_bodies(clock.now))
+    clock.now -= 5
+    with pytest.raises(SoakObservationError) as rejected:
+        sampler.observe(_role_bodies(clock.now))
+    assert rejected.value.code == "CLOCK_ROLLBACK"
+
+
+def test_sample_rejects_stale_health(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import SoakObservationError, SoakSampler
+
+    clock = _Clock(1_700_000_000_000)
+    sampler = SoakSampler(_parsed_manifest(tmp_path), clock_ms=clock)
+    bodies = _role_bodies(clock.now - 30_000)
+    with pytest.raises(SoakObservationError) as rejected:
+        sampler.observe(bodies)
+    assert rejected.value.code == "HEALTH_STALE"
+
+
+def test_sample_rejects_oversize_and_invalid_json(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import (
+        SoakObservationError,
+        SoakSampler,
+        parse_health_bytes,
+    )
+
+    manifest = _parsed_manifest(tmp_path)
+    with pytest.raises(SoakObservationError) as too_large:
+        parse_health_bytes(
+            b"x" * (manifest.output.max_health_bytes + 1),
+            max_bytes=manifest.output.max_health_bytes,
+            role="collector",
+        )
+    assert too_large.value.code == "HEALTH_PAYLOAD_TOO_LARGE"
+    with pytest.raises(SoakObservationError) as invalid:
+        parse_health_bytes(
+            b"not-json",
+            max_bytes=manifest.output.max_health_bytes,
+            role="writer",
+        )
+    assert invalid.value.code == "HEALTH_JSON_INVALID"
+    clock = _Clock(1_700_000_000_000)
+    sampler = SoakSampler(manifest, clock_ms=clock)
+    with pytest.raises(SoakObservationError) as sampled:
+        sampler.observe(
+            _role_bodies(clock.now),
+            raw_bytes_by_role={"collector": manifest.output.max_health_bytes + 8},
+        )
+    assert sampled.value.code == "HEALTH_PAYLOAD_TOO_LARGE"
+
+
+def test_redact_secrets_dsn_paths_and_payloads() -> None:
+    from app.server_runtime.public_soak import redact_for_evidence
+
+    redacted = redact_for_evidence(
+        {
+            "api_token": "abcd1234",
+            "lease_token": "lease-secret",
+            "dsn": "postgresql://candlescope:hunter2@127.0.0.1/db",
+            "log_path": "/home/helenanana/projects/CandleScope-server/logs/api.log",
+            "events": [
+                {"price": "1", "qty": "2", "agg_trade_id": 1},
+                {"price": "1", "qty": "2", "agg_trade_id": 2},
+            ],
+        },
+        max_bytes=16_384,
+    )
+    assert redacted["api_token"] == "<redacted>"
+    assert redacted["lease_token"] == "<redacted>"
+    assert redacted["dsn"] == "<redacted>"
+    assert redacted["log_path"] == "api.log"
+    assert redacted["events"] == {"dropped": 2, "kind": "market_payload"}
+
+
+def test_evidence_exclusive_create_and_hash_reread(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import EvidenceWriter, SoakSampler
+
+    manifest = _parsed_manifest(tmp_path)
+    clock = _Clock(1_700_000_000_000)
+    sampler = SoakSampler(manifest, clock_ms=clock)
+    writer = EvidenceWriter(
+        manifest,
+        mode=MODE_DEVELOPMENT_SMOKE,
+        sample_path=tmp_path / "samples" / "run.samples.jsonl",
+    )
+    record = sampler.observe(_role_bodies(clock.now))
+    writer.append_sample(record, fsync=True)
+    result = writer.finalize(phase_passed=True, elapsed_ms=300_000)
+    assert result["phase_passed"] is True
+    assert result["twenty_four_hour_public_continuity"] is False
+    assert result["production_ready"] is False
+    assert result["final_sample_sha256"] == record.sample_sha256
+    assert Path(manifest.output.result_path).is_file()
+    with pytest.raises(Exception):
+        EvidenceWriter(
+            manifest,
+            mode=MODE_DEVELOPMENT_SMOKE,
+            sample_path=tmp_path / "samples" / "run.samples.jsonl",
+        )
+
+
+def test_evidence_failure_writes_phase_passed_false(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import EvidenceWriter
+
+    manifest = _parsed_manifest(tmp_path)
+    writer = EvidenceWriter(
+        manifest,
+        mode=MODE_DEVELOPMENT_SMOKE,
+        sample_path=tmp_path / "samples" / "fail.samples.jsonl",
+    )
+    result = writer.finalize(
+        phase_passed=False,
+        elapsed_ms=12_000,
+        error_code="READY_TIMEOUT",
+        error_message="writer did not become ready",
+    )
+    assert result["phase_passed"] is False
+    assert result["phase1ai_passed"] is False
+    assert result["twenty_four_hour_public_continuity"] is False
+    assert result["production_ready"] is False
+    assert result["error"]["code"] == "READY_TIMEOUT"
+    stored = json.loads(Path(manifest.output.result_path).read_text(encoding="utf-8"))
+    assert stored["phase_passed"] is False
+
+

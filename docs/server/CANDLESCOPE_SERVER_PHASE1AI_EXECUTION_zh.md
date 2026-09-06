@@ -36,6 +36,11 @@
 | `0f579b93` | Worker cold query timeout 60s |
 | `dbeca227` | parquet segment 500 事件，避免数千小对象 |
 | `f5534b5b` | command-id 幂等探针在 PAUSED 上 STEP |
+| `88c4d4a2` | Worker `start_new` 加载期间续租 |
+| `b4629c7b` | archive catch-up 允许 500 事件段滞后 |
+| `225fc10b` | 后续 quiet 失败时仍保留 takeover 证据 |
+| `3b957968` | durable command 期间保持 scheduler heartbeat |
+| `b8754db1` | quiet checkpoint 在 archive 段对齐处冻结 collector |
 
 ## 2. 开发期聚焦检查
 
@@ -98,17 +103,41 @@ Live controller 在后续独立 smoke（未覆盖 8/9）中已能通过认证 AP
 | smoke-run-18 | `COMMAND_FAILED` step while PLAYING |
 | smoke-run-19 | `COMMAND_FAILED` idempotent STEP while PLAYING |
 | smoke-run-20 | `COMMAND_FAILED` `command result was not durable before the wait bound`；Worker `PERSISTENCE_DEGRADED` |
+| smoke-run-21 | `ARCHIVE_CATCHUP_TIMEOUT`（500 事件段滞后超过当时 slack） |
+| smoke-run-22 | `QUIET_CHECKPOINT_MISMATCH`（500 事件段；takeover 证据曾被 quiet 异常丢掉） |
+| smoke-run-23 | `WORKER_TAKEOVER_NOT_OBSERVED`（8s heartbeat 在 command persist 期间过期） |
+| smoke-run-25 | `QUIET_CHECKPOINT_MISMATCH`；`worker_takeover_observed=true`（100 事件段，live stream 错过对齐窗口） |
 
-smoke-17 起三次 create 均为 HTTP 200，session 进入 RUNNING，部分 command 200。
-尚未得到 `worker_takeover_observed=true` 的 5–10 分钟成功 smoke。
-未覆盖 smoke-8/9。未拼接。`twenty_four_hour_public_continuity=false`。
-`production_ready=false`。
+带三任务 replay 与 sibling Actor 接管的两次独立成功 `development-smoke`
+（新 run id、新 output，未覆盖 1–25，未拼接）：
+
+| 项 | smoke-24 | smoke-26 |
+| --- | --- | --- |
+| HEAD | `3b957968` | `b8754db1` |
+| elapsed_ms | 305076 | 303581 |
+| sample_count | 105 | 91 |
+| phase_passed | true | true |
+| phase1ai_passed | false | false |
+| twenty_four_hour_public_continuity | false | false |
+| production_ready | false | false |
+| replay_queued_observed | true | true |
+| worker_takeover_observed | true | true |
+| kill_role / exit | worker_a / -9 | worker_b / -9 |
+| independent verifier `--samples` | verified=true | verified=true |
+
+两次成功运行均通过认证 API 创建三个 snapshot-pinned 任务；queued 任务被观察到
+`PENDING`；Worker SIGKILL 后 sibling 接管仍活着的 Actor，而不是把被杀进程拉起。
+结果 schema 明确 `twenty_four_hour_public_continuity=false`。
+独立 verifier 未带 `--samples` 时会按结果旁路路径读取并报 `SAMPLE_COUNT_MISMATCH`，
+必须以绝对 `--samples` 路径复验。
 
 这不是 24 小时连续性证明，也不是生产发布授权。
 
 ## 4. 合并前门禁（实现后一次）
 
-- `pytest backend/tests/test_server_phase1ai_public_soak.py`：51 passed
+在 `b8754db1` 与两次已验证 smoke 之后实际运行：
+
+- `pytest backend/tests/test_server_phase1ai_public_soak.py`：61 passed
 - `pytest backend/tests/integration/test_server_phase1ai_smoke.py`：1 skipped
   （未设置 `CANDLESCOPE_PHASE1AI_SMOKE=1`；真实 CLI smoke 已在上一节执行）
 - `pytest backend/tests/test_server_phase1ah_profile.py`：9 passed
@@ -116,13 +145,32 @@ smoke-17 起三次 create 均为 HTTP 200，session 进入 RUNNING，部分 comm
 - `docker compose --env-file deploy/server/phase1ai.env.example -f deploy/server/compose.phase1ai.yml config --quiet`：通过
 - `git diff --check`：通过
 
-## 5. 未执行
+未把 `backend/tests/test_server_phase*.py` 全量回归当作 24 小时通过条件。
 
-- 带三任务 replay 与 sibling Actor 接管的两次独立 5–10 分钟 `development-smoke`
+## 5. Step 10 预检（未启动正式 24h）
+
+2026-09-06 15:36 CST 记录：
+
+- 独立 worktree `git status --porcelain` 为空；HEAD `b8754db16e098dbc1335525897204982759d0038`
+- Docker 29.1.3；Docker Compose 2.40.3；Python 3.12.13
+- 系统时钟 NTP 同步（`System clock synchronized: yes`，`NTP service: active`）
+- 根分区约 454G 可用
+
+未满足正式 `run` 启动条件：
+
+- 未人工确认告警接收端可达
+- 未做隔离 PITR / 备份恢复（禁止连接生产消费者）
+- 未冻结正式 24h manifest（六类故障、`duration_ms=86_400_000`、Compose config hash）
+- 未设置 `CANDLESCOPE_PHASE1AI_PUBLIC_SOAK=1` 与 `CANDLESCOPE_PHASE1AI_FAULT_INJECTION=1` 的 `run` 入口
+- development-smoke 只执行 Worker SIGKILL，不是六类故障
+
+## 6. 未执行
+
 - 正式 `run` 入口、双开关 24 小时窗口
 - 不可拼接的 `86_400_000 ms` monotonic elapsed
+- 六类计划故障（collector / writer / archiver / worker / scheduler / API）
 - `docs/server/evidence/phase1ai-public-24h-verification.json`
 - README `production_ready=true`
 - 人工告警可达确认与隔离 PITR 恢复
 
-未声称生产就绪。
+未声称生产就绪。Phase 1AI 按手册不得标为通过。

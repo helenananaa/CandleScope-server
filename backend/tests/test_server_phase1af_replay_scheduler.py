@@ -122,6 +122,50 @@ def test_two_workers_one_session_and_quota_isolation() -> None:
     asyncio.run(run())
 
 
+def test_create_queues_when_active_slots_are_full() -> None:
+    async def run() -> None:
+        now = [1_000]
+        store = InMemoryReplaySchedulerStore(clock_ms=lambda: now[0])
+        scheduler = ReplayScheduler(
+            store,
+            max_pending_per_org=2,
+            max_active_per_org=2,
+            clock_ms=lambda: now[0],
+        )
+        await scheduler.heartbeat("worker-a", capacity=1)
+        await scheduler.heartbeat("worker-b", capacity=1)
+        first = await scheduler.create_request(
+            organization_id="org-alpha",
+            workspace_id="ws-research",
+            idempotency_key="replay-a",
+            payload=_payload("a"),
+            priority=10,
+        )
+        second = await scheduler.create_request(
+            organization_id="org-alpha",
+            workspace_id="ws-research",
+            idempotency_key="replay-b",
+            payload=_payload("b"),
+            priority=9,
+        )
+        assert await scheduler.claim("worker-a") is not None
+        assert await scheduler.claim("worker-b") is not None
+        await scheduler.mark_running(first.request_id)
+        await scheduler.mark_running(second.request_id)
+        queued = await scheduler.create_request(
+            organization_id="org-alpha",
+            workspace_id="ws-research",
+            idempotency_key="replay-queued",
+            payload=_payload("queued"),
+            priority=0,
+        )
+        assert queued.state is ReplayRequestState.PENDING
+        leftover = await scheduler.claim("worker-a")
+        assert leftover is None
+
+    asyncio.run(run())
+
+
 def test_capacity_priority_aging_timeout_and_unavailable() -> None:
     async def run() -> None:
         now = [5_000]

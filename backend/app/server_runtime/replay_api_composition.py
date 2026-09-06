@@ -17,6 +17,7 @@ from app.server_runtime.replay_api_service import (
     ServerReplayApiService,
 )
 from app.server_runtime.replay_authorization import ReplayAuthorizationError
+from app.server_runtime.replay_scheduler import ReplaySchedulerError
 
 V2_UNAVAILABLE = {
     "GET /api/v1/replay/runs/{run_id}/tracks": "unavailable",
@@ -48,6 +49,16 @@ def build_server_replay_app(
     @app.exception_handler(ReplayAuthorizationError)
     async def authz_handler(_request, exc: ReplayAuthorizationError) -> JSONResponse:
         return JSONResponse({"error": {"code": exc.code, "message": exc.message}}, 403)
+
+    @app.exception_handler(ReplaySchedulerError)
+    async def scheduler_handler(_request, exc: ReplaySchedulerError) -> JSONResponse:
+        return JSONResponse(
+            {
+                "protocol": "replay.v1",
+                "error": {"code": exc.code, "message": str(exc)},
+            },
+            409,
+        )
 
     @app.exception_handler(ReplayDomainError)
     async def domain_handler(_request, exc: ReplayDomainError) -> JSONResponse:

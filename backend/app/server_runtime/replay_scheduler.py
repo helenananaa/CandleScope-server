@@ -212,10 +212,9 @@ class ReplayScheduler:
                 raise ReplaySchedulerIdempotencyError()
             return existing
         pending, active = await self._store.count_open(organization_id)
+        del active
         if pending >= self._max_pending_per_org:
             raise ReplaySchedulerQuotaError("pending replay quota exceeded")
-        if active >= self._max_active_per_org:
-            raise ReplaySchedulerQuotaError("active replay quota exceeded")
         now = self._clock_ms()
         timeout = self._default_timeout_ms if timeout_ms is None else timeout_ms
         request = ReplaySchedulerRequest(

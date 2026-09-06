@@ -27,6 +27,15 @@
 | `aa65d4b2` | API 启动前等待 archive catch-up |
 | `840f1883` | 每 run 独立 MinIO data_epoch / Kafka group |
 | `e7d55a5f` | 故障计划完成后不再越界索引 |
+| `b6282b72` | live smoke POST 三任务并观察 sibling Actor 接管 |
+| `914d1f2c` | 只 pin 连续 agg_trade 前缀 |
+| `0c4435a8` | replay 窗口对齐 1m |
+| `8b5b69e5` | archive epoch 映射为 actor snapshot digest |
+| `336ebfb9` | active 满时排队 PENDING 而不是拒绝 create |
+| `99656243` | Worker query 忽略 HTTP proxy 并记录 load cause |
+| `0f579b93` | Worker cold query timeout 60s |
+| `dbeca227` | parquet segment 500 事件，避免数千小对象 |
+| `f5534b5b` | command-id 幂等探针在 PAUSED 上 STEP |
 
 ## 2. 开发期聚焦检查
 
@@ -74,9 +83,26 @@ Query `/health/ready` 与 Server API `/health/ready` 返回 `ready=true` 且
 `production_ready=false`；计划内 Worker SIGKILL 后进程被重启且 quiet
 checkpoint 收敛。结果 schema 明确 `twenty_four_hour_public_continuity=false`。
 
-Live controller 尚未在成功 smoke 中通过 Server API 创建 `replay-a` /
-`replay-b` / `replay-queued`，也未在真实链路上证明 command-id 幂等。
-这些行为有单元测试（`PublicSoakReplayDriver`），但还不是 live smoke 证据。
+Live controller 在后续独立 smoke（未覆盖 8/9）中已能通过认证 API 创建
+三个 snapshot-pinned 任务，且 Worker 可将 session 推到 `RUNNING`：
+
+| 结果文件 | 错误 |
+| --- | --- |
+| smoke-run-10 | `SESSION_NOT_ASSIGNED` 稀疏 pin 跨 1167 笔 |
+| smoke-run-11 | `SESSION_NOT_ASSIGNED` `replay_start_ms` 未对齐 1m |
+| smoke-run-12 | `SESSION_NOT_ASSIGNED` actor 要求 `sha256:` epoch |
+| smoke-run-13 | `REPLAY_CREATE_FAILED` active=2 时拒绝 queued |
+| smoke-run-14/15 | `SESSION_NOT_ASSIGNED` Worker query timeout / proxy |
+| smoke-run-16 | `SESSION_NOT_ASSIGNED` 过小 parquet segment |
+| smoke-run-17 | `COMMAND_FAILED` pause while PAUSED |
+| smoke-run-18 | `COMMAND_FAILED` step while PLAYING |
+| smoke-run-19 | `COMMAND_FAILED` idempotent STEP while PLAYING |
+| smoke-run-20 | `COMMAND_FAILED` `command result was not durable before the wait bound`；Worker `PERSISTENCE_DEGRADED` |
+
+smoke-17 起三次 create 均为 HTTP 200，session 进入 RUNNING，部分 command 200。
+尚未得到 `worker_takeover_observed=true` 的 5–10 分钟成功 smoke。
+未覆盖 smoke-8/9。未拼接。`twenty_four_hour_public_continuity=false`。
+`production_ready=false`。
 
 这不是 24 小时连续性证明，也不是生产发布授权。
 
@@ -92,6 +118,7 @@ Live controller 尚未在成功 smoke 中通过 Server API 创建 `replay-a` /
 
 ## 5. 未执行
 
+- 带三任务 replay 与 sibling Actor 接管的两次独立 5–10 分钟 `development-smoke`
 - 正式 `run` 入口、双开关 24 小时窗口
 - 不可拼接的 `86_400_000 ms` monotonic elapsed
 - `docs/server/evidence/phase1ai-public-24h-verification.json`

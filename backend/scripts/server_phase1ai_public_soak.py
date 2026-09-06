@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import shutil
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--output", required=True)
     args = parser.parse_args(argv)
     try:
-        preflight(
+        manifest = preflight(
             mode=args.command,
             manifest_path=args.manifest,
             output_path=args.output,
@@ -156,17 +157,21 @@ def main(argv: list[str] | None = None) -> int:
     except PublicSoakCliError as exc:
         print(json.dumps(exc.to_wire(), sort_keys=True), flush=True)
         return 1
-    payload = {
-        "phase_passed": False,
-        "phase1ai_passed": False,
-        "code": "CONTROLLER_NOT_STARTED",
-        "message": "preflight passed; full-chain execution is performed by execute_soak",
-        "twenty_four_hour_public_continuity": False,
-        "production_ready": False,
-        "mode": args.command,
-    }
+    from app.server_runtime.public_soak import execute_public_soak
+
+    payload = asyncio.run(
+        execute_public_soak(
+            manifest,
+            mode=args.command,
+            environ=os.environ,
+            repo_root=Path.cwd(),
+            python_executable=sys.executable,
+        )
+    )
     print(json.dumps(payload, sort_keys=True), flush=True)
-    return 0
+    if payload.get("twenty_four_hour_public_continuity") is True:
+        return 0 if payload.get("phase_passed") is True else 1
+    return 0 if payload.get("phase_passed") is True else 1
 
 
 if __name__ == "__main__":

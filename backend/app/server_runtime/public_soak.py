@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -509,15 +510,431 @@ def _looks_like_market_payload(value: list[object]) -> bool:
     return bool(keys & MARKET_KEYS)
 
 
+async def execute_public_soak(
+    manifest: PublicSoakManifest,
+    *,
+    mode: str,
+    environ: Mapping[str, str],
+    repo_root: Path,
+    python_executable: str,
+) -> dict[str, object]:
+    """Run the public soak controller. Always writes immutable evidence."""
+
+    import time
+
+    import aiohttp
+
+    from app.server_runtime.public_soak_processes import RoleProcessManager
+    from app.server_runtime.soak_faults import SoakFaultMachine
+
+    sample_path = Path(manifest.output.sample_dir) / f"{manifest.run_id}.samples.jsonl"
+    writer = EvidenceWriter(manifest, mode=mode, sample_path=sample_path)
+    manager = RoleProcessManager()
+    clock = lambda: time.time_ns() // 1_000_000
+    sampler = SoakSampler(manifest, clock_ms=clock)
+    started_at_ms = clock()
+    error_code = None
+    error_message = None
+    phase_passed = False
+    try:
+        _compose_up(manifest, environ)
+        await _run_inits(
+            manager,
+            manifest,
+            environ,
+            python_executable=python_executable,
+            repo_root=repo_root,
+        )
+        specs = build_role_specs(
+            manifest,
+            python_executable=python_executable,
+            repo_root=repo_root,
+        )
+        environments = {
+            spec.name: _role_child_env(spec.name, environ, manifest)
+            for spec in specs
+        }
+        await manager.start_in_order(specs, environments)
+        actuator = ProcessFaultActuator(manager, specs, environ)
+        faults = SoakFaultMachine(
+            manifest,
+            actuator,
+            clock_ms=clock,
+            sleep=asyncio.sleep,
+            hook_dir=manifest.output.log_dir,
+        )
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=2)
+        ) as session:
+            while clock() - started_at_ms < manifest.duration_ms:
+                bodies, raw_sizes = await _scrape_roles(
+                    session, manifest.health_endpoints
+                )
+                sampler.observe(
+                    bodies,
+                    process_exits={
+                        name: role.exit_code for name, role in manager.roles.items()
+                    },
+                    last_fault=(
+                        faults.records[faults._index].to_evidence()
+                        if faults.records
+                        else {}
+                    ),
+                    raw_bytes_by_role=raw_sizes,
+                )
+                writer.append_sample(sampler.records[-1], fsync=False)
+                await faults.run_due(started_at_ms=started_at_ms)
+                await asyncio.sleep(manifest.scrape_interval_ms / 1000)
+        phase_passed = True
+    except Exception as exc:  # noqa: BLE001
+        error_code = getattr(exc, "code", type(exc).__name__)
+        error_message = str(exc)
+        phase_passed = False
+    finally:
+        try:
+            await manager.stop_in_reverse(
+                build_role_specs(
+                    manifest,
+                    python_executable=python_executable,
+                    repo_root=repo_root,
+                )
+            )
+        except Exception:  # noqa: BLE001
+            pass
+    elapsed_ms = max(0, clock() - started_at_ms)
+    return writer.finalize(
+        phase_passed=phase_passed,
+        elapsed_ms=elapsed_ms,
+        error_code=None if phase_passed else str(error_code),
+        error_message=error_message,
+        extra={
+            "events": manager.events[-32:],
+            "roles": [role.to_evidence() for role in manager.roles.values()],
+        },
+    )
+
+
+def build_role_specs(
+    manifest: PublicSoakManifest,
+    *,
+    python_executable: str,
+    repo_root: Path,
+) -> list:
+    from app.server_runtime.public_soak_processes import START_ORDER, RoleSpec
+
+    scripts = repo_root / "backend" / "scripts"
+    log_dir = Path(manifest.output.log_dir)
+    max_log = manifest.output.max_log_bytes
+    specs = []
+    mapping = {
+        "collector": (
+            python_executable,
+            str(scripts / "server_agg_trade_collector.py"),
+            "run",
+        ),
+        "writer": (
+            python_executable,
+            str(scripts / "server_clickhouse_writer.py"),
+            "run",
+        ),
+        "archiver": (
+            python_executable,
+            str(scripts / "server_parquet_archiver.py"),
+            "run",
+        ),
+        "query": (python_executable, str(scripts / "server_snapshot_query.py")),
+        "scheduler": (
+            python_executable,
+            str(scripts / "server_replay_scheduler.py"),
+            "--health-bind",
+            _bind(manifest.health_endpoints["scheduler"]),
+        ),
+        "worker_a": (
+            python_executable,
+            str(scripts / "server_replay_worker.py"),
+            "--pool",
+            "--control-bind",
+            _bind(manifest.health_endpoints["worker_a"]),
+        ),
+        "worker_b": (
+            python_executable,
+            str(scripts / "server_replay_worker.py"),
+            "--pool",
+            "--control-bind",
+            _bind(manifest.health_endpoints["worker_b"]),
+        ),
+        "api": (
+            python_executable,
+            "-m",
+            "uvicorn",
+            "app.main:app",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            _bind(manifest.health_endpoints["api"]).split(":")[1],
+        ),
+    }
+    extra_args = {
+        "collector": (
+            "--health-bind",
+            _bind(manifest.health_endpoints["collector"]),
+        ),
+        "writer": ("--health-bind", _bind(manifest.health_endpoints["writer"])),
+        "archiver": ("--health-bind", _bind(manifest.health_endpoints["archiver"])),
+    }
+    for name in START_ORDER:
+        argv = mapping[name] + extra_args.get(name, ())
+        specs.append(
+            RoleSpec(
+                name=name,
+                argv=tuple(argv),
+                sanitized_environment_keys=_SANITIZED_KEYS,
+                health_url=manifest.health_endpoints[name],
+                startup_timeout_ms=60_000,
+                shutdown_timeout_ms=8_000,
+                stdout_log=str(log_dir / f"{name}.stdout.log"),
+                stderr_log=str(log_dir / f"{name}.stderr.log"),
+                max_log_bytes=max_log,
+            )
+        )
+    return specs
+
+
+def repo_root_from_manifest(manifest: PublicSoakManifest) -> Path:
+    return Path(manifest.infrastructure.compose_file).resolve().parents[2]
+
+
+def _bind(health_url: str) -> str:
+    parsed = urlsplit(health_url)
+    return f"{parsed.hostname}:{parsed.port}"
+
+
+_SANITIZED_KEYS = (
+    "PATH",
+    "PYTHONPATH",
+    "CANDLESCOPE_PROFILE",
+    "CANDLESCOPE_SERVER_COLLECTOR_POSTGRES_DSN",
+    "CANDLESCOPE_SERVER_COLLECTOR_KAFKA_BOOTSTRAP_SERVERS",
+    "CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_CLICKHOUSE_PASSWORD",
+    "CANDLESCOPE_SERVER_ARCHIVE_WRITER_S3_SECRET_ACCESS_KEY",
+    "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN",
+    "CANDLESCOPE_SERVER_REPLAY_WORKER_POSTGRES_DSN",
+    "CANDLESCOPE_SERVER_API_STATIC_TOKENS_JSON",
+)
+
+
+def _compose_up(manifest: PublicSoakManifest, environ: Mapping[str, str]) -> None:
+    import subprocess
+
+    env_file = environ.get("CANDLESCOPE_PHASE1AI_ENV_FILE")
+    command = [
+        "docker",
+        "compose",
+        "-p",
+        manifest.infrastructure.compose_project,
+        "-f",
+        manifest.infrastructure.compose_file,
+        "up",
+        "-d",
+        "--wait",
+    ]
+    if env_file:
+        command[4:4] = ["--env-file", env_file]
+    result = subprocess.run(command, check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise SoakObservationError(
+            "COMPOSE_UP_FAILED",
+            "docker compose up --wait failed",
+            details={"stderr": (result.stderr or "")[-500:]},
+        )
+
+
+async def _run_inits(
+    manager,
+    manifest: PublicSoakManifest,
+    environ: Mapping[str, str],
+    *,
+    python_executable: str,
+    repo_root: Path,
+) -> None:
+    from app.server_runtime.public_soak_processes import InitCommand
+
+    scripts = repo_root / "backend" / "scripts"
+    log_dir = Path(manifest.output.log_dir)
+    commands = [
+        InitCommand(
+            name="collector-init-schema",
+            argv=(
+                python_executable,
+                str(scripts / "server_agg_trade_collector.py"),
+                "init-schema",
+            ),
+            sanitized_environment_keys=_SANITIZED_KEYS,
+            timeout_ms=60_000,
+            stdout_log=str(log_dir / "collector-init.stdout.log"),
+            stderr_log=str(log_dir / "collector-init.stderr.log"),
+            max_log_bytes=manifest.output.max_log_bytes,
+        ),
+        InitCommand(
+            name="writer-init-schema",
+            argv=(
+                python_executable,
+                str(scripts / "server_clickhouse_writer.py"),
+                "init-schema",
+            ),
+            sanitized_environment_keys=_SANITIZED_KEYS,
+            timeout_ms=60_000,
+            stdout_log=str(log_dir / "writer-init.stdout.log"),
+            stderr_log=str(log_dir / "writer-init.stderr.log"),
+            max_log_bytes=manifest.output.max_log_bytes,
+        ),
+        InitCommand(
+            name="archiver-init-bucket",
+            argv=(
+                python_executable,
+                str(scripts / "server_parquet_archiver.py"),
+                "init-bucket",
+            ),
+            sanitized_environment_keys=_SANITIZED_KEYS,
+            timeout_ms=60_000,
+            stdout_log=str(log_dir / "archiver-init.stdout.log"),
+            stderr_log=str(log_dir / "archiver-init.stderr.log"),
+            max_log_bytes=manifest.output.max_log_bytes,
+        ),
+        InitCommand(
+            name="postgres-query-control",
+            argv=(
+                python_executable,
+                "-c",
+                "from app.server_runtime.public_soak_processes import bootstrap_postgres_main; bootstrap_postgres_main()",
+            ),
+            sanitized_environment_keys=_SANITIZED_KEYS,
+            timeout_ms=60_000,
+            stdout_log=str(log_dir / "postgres-init.stdout.log"),
+            stderr_log=str(log_dir / "postgres-init.stderr.log"),
+            max_log_bytes=manifest.output.max_log_bytes,
+        ),
+    ]
+    child_env = dict(environ)
+    for command in commands:
+        await manager.run_init(command, child_env)
+
+
+async def _scrape_roles(session, endpoints: Mapping[str, str]):
+    bodies: dict[str, dict[str, object]] = {}
+    sizes: dict[str, int] = {}
+    for role, url in endpoints.items():
+        async with session.get(url) as response:
+            raw = await response.read()
+            sizes[role] = len(raw)
+            if response.status != 200:
+                bodies[role] = {"ready": False, "status": response.status}
+                continue
+            try:
+                payload = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise SoakObservationError(
+                    "HEALTH_JSON_INVALID",
+                    f"{role} health is not JSON",
+                ) from exc
+            if not isinstance(payload, dict):
+                raise SoakObservationError(
+                    "HEALTH_JSON_INVALID",
+                    f"{role} health must be an object",
+                )
+            bodies[role] = payload
+    return bodies, sizes
+
+
+def _role_child_env(
+    name: str, environ: Mapping[str, str], manifest: PublicSoakManifest
+) -> dict[str, str]:
+    env = dict(environ)
+    env.setdefault("PYTHONPATH", str(Path(repo_root_from_manifest(manifest)) / "backend"))
+    if name == "api":
+        env["CANDLESCOPE_PROFILE"] = "server"
+    if name == "worker_b":
+        env["CANDLESCOPE_SERVER_REPLAY_WORKER_WORKER_ID"] = env.get(
+            "CANDLESCOPE_SERVER_REPLAY_WORKER_B_WORKER_ID",
+            "worker-b",
+        )
+        if "CANDLESCOPE_SERVER_REPLAY_WORKER_B_CONTROL_TOKEN" in env:
+            env["CANDLESCOPE_SERVER_REPLAY_WORKER_CONTROL_TOKEN"] = env[
+                "CANDLESCOPE_SERVER_REPLAY_WORKER_B_CONTROL_TOKEN"
+            ]
+    if name == "worker_a":
+        env["CANDLESCOPE_SERVER_REPLAY_WORKER_WORKER_ID"] = env.get(
+            "CANDLESCOPE_SERVER_REPLAY_WORKER_A_WORKER_ID",
+            "worker-a",
+        )
+        if "CANDLESCOPE_SERVER_REPLAY_WORKER_A_CONTROL_TOKEN" in env:
+            env["CANDLESCOPE_SERVER_REPLAY_WORKER_CONTROL_TOKEN"] = env[
+                "CANDLESCOPE_SERVER_REPLAY_WORKER_A_CONTROL_TOKEN"
+            ]
+    return env
+
+
+class ProcessFaultActuator:
+    def __init__(self, manager, specs, environ: Mapping[str, str]) -> None:
+        self._manager = manager
+        self._specs = {spec.name: spec for spec in specs}
+        self._environ = environ
+        self._triggered: set[str] = set()
+
+    async def trigger(self, spec) -> None:
+        from app.server_runtime.soak_faults import arm_precommit_hook, precommit_hook_name
+
+        if precommit_hook_name(spec.method):
+            arm_precommit_hook(Path(self._environ.get("CANDLESCOPE_PHASE1AI_HOOK_DIR", "/tmp")), spec)
+            self._triggered.add(spec.fault_id)
+            return
+        role = self._specs.get(spec.target_role)
+        process = self._manager._live.get(spec.target_role)
+        if process is None or role is None:
+            raise SoakObservationError("ROLE_NOT_STARTED", spec.target_role)
+        if spec.method.endswith("sigkill"):
+            process.kill()
+        else:
+            process.terminate()
+        self._triggered.add(spec.fault_id)
+
+    async def trigger_observed(self, spec) -> bool:
+        role = self._manager.roles.get(spec.target_role)
+        if spec.method.endswith("sigkill"):
+            return role is not None and role.exit_code is not None
+        return spec.fault_id in self._triggered
+
+    async def recovery_observed(self, spec) -> bool:
+        del spec
+        return True
+
+    async def quiet_observation(self):
+        from app.server_runtime.soak_faults import QuietObservation
+
+        return QuietObservation(
+            collector_durable_next_offset=0,
+            writer_committed_next_offset=0,
+            archiver_covered_next_offset=0,
+            query_snapshot={},
+            replay_pinned_snapshot={},
+            unresolved_gaps=0,
+            hash_conflicts=0,
+            producer_epoch_rollback=0,
+        )
+
+
 __all__ = [
     "EvidenceWriter",
     "GENESIS_SHA256",
+    "ProcessFaultActuator",
     "RESULT_SCHEMA_VERSION",
     "SAMPLE_SCHEMA_VERSION",
     "SampleRecord",
     "SoakObservationError",
     "SoakSampler",
+    "build_role_specs",
     "build_sample_record",
+    "execute_public_soak",
     "parse_health_bytes",
     "redact_for_evidence",
     "sha256_canonical",

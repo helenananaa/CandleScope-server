@@ -484,6 +484,95 @@ def _default_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def bootstrap_postgres_main() -> None:
+    """Create login roles and apply existing query/replay migrations."""
+
+    import asyncio
+
+    asyncio.run(_bootstrap_postgres())
+
+
+async def _bootstrap_postgres() -> None:
+    import psycopg
+    from psycopg import sql
+
+    from app.server_runtime.query_migrations import PostgresQueryControlMigrator
+    from app.server_runtime.replay_runtime_migrations import (
+        DEFAULT_REPLAY_MIGRATION_PATH,
+        PostgresReplayRuntimeMigrator,
+    )
+    from app.server_runtime.storage.postgres_lease import PostgresStreamLeaseStore
+    from app.server_runtime.storage.postgres_replay_lease import (
+        PostgresReplaySessionLeaseStore,
+    )
+    from app.server_runtime.storage.postgres_replay_scheduler import (
+        DEFAULT_SCHEDULER_MIGRATION_PATH,
+        apply_scheduler_migration,
+    )
+
+    admin_dsn = _required_env("CANDLESCOPE_PHASE1AI_POSTGRES_ADMIN_DSN")
+    replay_role = _required_env("CANDLESCOPE_PHASE1AI_REPLAY_ROLE")
+    replay_password = _required_env("CANDLESCOPE_PHASE1AI_REPLAY_ROLE_PASSWORD")
+    query_role = _required_env("CANDLESCOPE_PHASE1AI_QUERY_ROLE")
+    query_password = _required_env("CANDLESCOPE_PHASE1AI_QUERY_ROLE_PASSWORD")
+    auditor_role = _required_env("CANDLESCOPE_PHASE1AI_QUERY_AUDITOR_ROLE")
+    auditor_password = _required_env("CANDLESCOPE_PHASE1AI_QUERY_AUDITOR_PASSWORD")
+    async with (
+        await psycopg.AsyncConnection.connect(admin_dsn) as connection,
+        connection.cursor() as cursor,
+    ):
+        for role, password in (
+            (replay_role, replay_password),
+            (query_role, query_password),
+            (auditor_role, auditor_password),
+        ):
+            await cursor.execute(
+                "SELECT 1 FROM pg_roles WHERE rolname = %s",
+                (role,),
+            )
+            if await cursor.fetchone() is None:
+                await cursor.execute(
+                    sql.SQL(
+                        "CREATE ROLE {} LOGIN PASSWORD {} INHERIT "
+                        "NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                        "NOREPLICATION NOBYPASSRLS"
+                    ).format(sql.Identifier(role), sql.Literal(password))
+                )
+    await PostgresStreamLeaseStore(admin_dsn).initialize_schema()
+    await PostgresReplaySessionLeaseStore(admin_dsn).initialize_schema()
+    await PostgresQueryControlMigrator(
+        admin_dsn,
+        migration_path=(
+            Path(__file__).resolve().parents[3]
+            / "deploy"
+            / "server"
+            / "postgres"
+            / "migrations"
+            / "001_query_control.sql"
+        ),
+        runtime_login_role=query_role,
+        auditor_login_role=auditor_role,
+        backend_ids=("clickhouse-market-events-v1",),
+    ).apply()
+    await PostgresReplayRuntimeMigrator(
+        admin_dsn,
+        migration_path=DEFAULT_REPLAY_MIGRATION_PATH,
+        runtime_login_role=replay_role,
+    ).apply()
+    await apply_scheduler_migration(
+        admin_dsn,
+        migration_path=DEFAULT_SCHEDULER_MIGRATION_PATH,
+        runtime_login_role=replay_role,
+    )
+
+
+def _required_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value or not value.strip():
+        raise RoleProcessError("INIT_FAILED", f"{name} is required")
+    return value.strip()
+
+
 __all__ = [
     "INIT_ORDER",
     "InitCommand",
@@ -493,5 +582,6 @@ __all__ = [
     "RoleSpec",
     "START_ORDER",
     "STOP_ORDER",
+    "bootstrap_postgres_main",
     "role_environment",
 ]

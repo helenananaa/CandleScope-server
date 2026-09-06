@@ -31,6 +31,35 @@ from app.server_runtime.replay_worker_settings import ReplayWorkerSettings
 QueryFactory = Callable[[Mapping[str, object]], MarketEventQuery]
 
 
+def _pool_error_text(exc: BaseException) -> str:
+    code = getattr(exc, "code", type(exc).__name__)
+    parts = [f"replay-worker-pool: {code}: {exc}"]
+    details = getattr(exc, "details", None)
+    if details:
+        parts.append(f"details={dict(details)}")
+    cause = exc.__cause__
+    if cause is not None:
+        parts.append(f"cause={type(cause).__name__}: {cause}")
+    return " ".join(parts)
+
+
+async def _renew_until(lease_store, lease, settings, stop: asyncio.Event) -> None:
+    interval = max(0.2, settings.renew_interval_ms / 1_000)
+    current = lease
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except TimeoutError:
+            try:
+                current = await lease_store.renew(
+                    current, lease_ttl_ms=settings.lease_ttl_ms
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(_pool_error_text(exc), file=sys.stderr, flush=True)
+                return
+
+
 def server_query_from_payload(
     settings: ReplayWorkerSettings,
     payload: Mapping[str, object],
@@ -126,18 +155,19 @@ class ReplayWorkerPoolLoop:
                     await self._abandon_claim()
                 else:
                     await self._drain_commands()
-            except ReplaySessionLeaseFencedError:
+            except ReplaySessionLeaseFencedError as exc:
+                print(_pool_error_text(exc), file=sys.stderr, flush=True)
                 await self._abandon_claim()
             except ReplayDomainError as exc:
                 print(
-                    f"replay-worker-pool: {exc.code}: {exc}",
+                    _pool_error_text(exc),
                     file=sys.stderr,
                     flush=True,
                 )
                 await self._abandon_claim()
             except Exception as exc:  # noqa: BLE001
                 print(
-                    f"replay-worker-pool: {type(exc).__name__}: {exc}",
+                    _pool_error_text(exc),
                     file=sys.stderr,
                     flush=True,
                 )
@@ -218,6 +248,10 @@ class ReplayWorkerPoolLoop:
             workspace_id=str(payload.get("workspace_id") or request.workspace_id),
             lease_ttl_ms=self._settings.lease_ttl_ms,
         )
+        stop_renew = asyncio.Event()
+        keeper = asyncio.create_task(
+            _renew_until(self._lease_store, lease, self._settings, stop_renew)
+        )
         try:
             spec = spec_from_assignment(
                 lease=lease,
@@ -252,6 +286,13 @@ class ReplayWorkerPoolLoop:
                     flush=True,
                 )
             raise
+        finally:
+            stop_renew.set()
+            keeper.cancel()
+            try:
+                await keeper
+            except asyncio.CancelledError:
+                pass
 
     async def _drain_commands(self) -> None:
         if self._worker is None or self._assignment is None:

@@ -184,16 +184,18 @@ class ReplayWorker:
             self._renew_task = None
         session = self._session
         lease = self._lease
-        if session is not None:
-            await session.close()
-        if lease is not None and self._state is not ReplayWorkerState.FENCED:
-            try:
-                await self._lease_store.release(lease)
-            except ReplaySessionLeaseFencedError:
-                self._fencing_conflicts += 1
-        self._session = None
-        self._lease = None
-        self._state = ReplayWorkerState.STOPPED
+        try:
+            if session is not None:
+                await session.close()
+        finally:
+            if lease is not None:
+                try:
+                    await self._lease_store.release(lease)
+                except ReplaySessionLeaseFencedError:
+                    self._fencing_conflicts += 1
+            self._session = None
+            self._lease = None
+            self._state = ReplayWorkerState.STOPPED
 
     async def _prepare(self) -> None:
         if self._session is not None:

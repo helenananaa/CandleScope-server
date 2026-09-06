@@ -969,4 +969,206 @@ def test_replay_queued_must_be_observed(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+class _FaultClock:
+    def __init__(self, now: int) -> None:
+        self.now = now
+
+    def __call__(self) -> int:
+        return self.now
+
+    async def sleep(self, seconds: float) -> None:
+        advanced = int(seconds * 1000)
+        self.now += advanced if advanced > 0 else 50
+
+
+class _FakeActuator:
+    def __init__(self, *, trigger_ok: bool = True, recover_ok: bool = True) -> None:
+        self.trigger_ok = trigger_ok
+        self.recover_ok = recover_ok
+        self.triggered: list[str] = []
+        self.snapshot = {
+            "data_epoch": "epoch-1",
+            "snapshot_version": 4,
+            "manifest_sha256": "a" * 64,
+            "manifest_uri": "s3://candlescope-archive/snapshot-4.json",
+        }
+        self.offset = 10
+
+    async def trigger(self, spec: object) -> None:
+        self.triggered.append(getattr(spec, "method"))
+
+    async def trigger_observed(self, spec: object) -> bool:
+        del spec
+        return self.trigger_ok
+
+    async def recovery_observed(self, spec: object) -> bool:
+        del spec
+        return self.recover_ok
+
+    async def quiet_observation(self):
+        from app.server_runtime.soak_faults import QuietObservation
+
+        return QuietObservation(
+            collector_durable_next_offset=self.offset,
+            writer_committed_next_offset=self.offset,
+            archiver_covered_next_offset=self.offset,
+            query_snapshot=self.snapshot,
+            replay_pinned_snapshot=dict(self.snapshot),
+            unresolved_gaps=0,
+            hash_conflicts=0,
+            producer_epoch_rollback=0,
+        )
+
+
+def test_fault_one_way_transitions_and_quiet_checkpoint(tmp_path: Path) -> None:
+    from app.server_runtime.soak_faults import (
+        FaultStatus,
+        SoakFaultMachine,
+        verify_quiet_checkpoint,
+    )
+
+    async def run() -> None:
+        clock = _FaultClock(0)
+        actuator = _FakeActuator()
+        machine = SoakFaultMachine(
+            _parsed_manifest(tmp_path),
+            actuator,
+            clock_ms=clock,
+            sleep=clock.sleep,
+        )
+        completed = await machine.run_all(started_at_ms=0)
+        assert len(completed) == 1
+        assert completed[0].status is FaultStatus.QUIET_CHECKPOINT_VERIFIED
+        assert actuator.triggered == ["worker_sigkill"]
+        assert machine.remaining() == ()
+        verify_quiet_checkpoint(await actuator.quiet_observation())
+
+    asyncio.run(run())
+
+
+def test_fault_timeout_does_not_continue(tmp_path: Path) -> None:
+    from app.server_runtime.soak_faults import (
+        FaultMachineError,
+        FaultStatus,
+        SoakFaultMachine,
+    )
+
+    async def run() -> None:
+        clock = _FaultClock(0)
+        actuator = _FakeActuator(trigger_ok=False)
+        machine = SoakFaultMachine(
+            _parsed_manifest(tmp_path),
+            actuator,
+            clock_ms=clock,
+            sleep=clock.sleep,
+        )
+        with pytest.raises(FaultMachineError) as rejected:
+            await machine.run_all(started_at_ms=0)
+        assert rejected.value.code == "TRIGGER_TIMEOUT"
+        assert machine.records[0].status is FaultStatus.FAILED
+        assert machine._index == 0
+
+    asyncio.run(run())
+
+
+def test_fault_quiet_checkpoint_rejects_mismatch() -> None:
+    from app.server_runtime.soak_faults import (
+        FaultMachineError,
+        QuietObservation,
+        verify_quiet_checkpoint,
+    )
+
+    snapshot = {
+        "data_epoch": "epoch-1",
+        "snapshot_version": 4,
+        "manifest_sha256": "a" * 64,
+        "manifest_uri": "s3://candlescope-archive/snapshot-4.json",
+    }
+    with pytest.raises(FaultMachineError) as rejected:
+        verify_quiet_checkpoint(
+            QuietObservation(
+                collector_durable_next_offset=10,
+                writer_committed_next_offset=9,
+                archiver_covered_next_offset=10,
+                query_snapshot=snapshot,
+                replay_pinned_snapshot=snapshot,
+                unresolved_gaps=0,
+                hash_conflicts=0,
+                producer_epoch_rollback=0,
+            )
+        )
+    assert rejected.value.code == "QUIET_CHECKPOINT_MISMATCH"
+
+
+def test_fault_writer_archiver_reuse_precommit_hooks(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_manifest import FaultSpec
+    from app.server_runtime.soak_faults import (
+        ARCHIVER_PRECOMMIT_HOOK,
+        WRITER_PRECOMMIT_HOOK,
+        arm_precommit_hook,
+        precommit_hook_name,
+        required_methods_for_plan,
+    )
+
+    writer = FaultSpec(
+        fault_id="writer-pre-commit",
+        target_role="writer",
+        method="writer_pre_commit_exit",
+        scheduled_elapsed_ms=1_000,
+        observation_timeout_ms=1_000,
+        recovery_timeout_ms=1_000,
+    )
+    archiver = FaultSpec(
+        fault_id="archiver-pre-commit",
+        target_role="archiver",
+        method="archiver_pre_commit_exit",
+        scheduled_elapsed_ms=2_000,
+        observation_timeout_ms=1_000,
+        recovery_timeout_ms=1_000,
+    )
+    assert precommit_hook_name(writer.method) == WRITER_PRECOMMIT_HOOK
+    assert precommit_hook_name(archiver.method) == ARCHIVER_PRECOMMIT_HOOK
+    writer_path = arm_precommit_hook(tmp_path, writer)
+    archiver_path = arm_precommit_hook(tmp_path, archiver)
+    assert writer_path.name == f"writer.{WRITER_PRECOMMIT_HOOK}.arm"
+    assert archiver_path.name == f"archiver.{ARCHIVER_PRECOMMIT_HOOK}.arm"
+    assert writer_path.read_text(encoding="utf-8") == "writer-pre-commit"
+    plan = _parsed_manifest(tmp_path, mode=MODE_RUN).fault_plan
+    assert required_methods_for_plan(plan) == (
+        "collector_sigkill",
+        "writer_pre_commit_exit",
+        "archiver_pre_commit_exit",
+        "worker_sigkill",
+        "scheduler_restart",
+        "api_restart",
+    )
+
+
+def test_fault_run_plan_executes_six_in_order(tmp_path: Path) -> None:
+    from app.server_runtime.soak_faults import FaultStatus, SoakFaultMachine
+
+    async def run() -> None:
+        clock = _FaultClock(0)
+        actuator = _FakeActuator()
+        machine = SoakFaultMachine(
+            _parsed_manifest(tmp_path, mode=MODE_RUN),
+            actuator,
+            clock_ms=clock,
+            sleep=clock.sleep,
+        )
+        completed = await machine.run_all(started_at_ms=0)
+        assert [item.spec.method for item in completed] == [
+            "collector_sigkill",
+            "writer_pre_commit_exit",
+            "archiver_pre_commit_exit",
+            "worker_sigkill",
+            "scheduler_restart",
+            "api_restart",
+        ]
+        assert all(item.status is FaultStatus.QUIET_CHECKPOINT_VERIFIED for item in completed)
+
+    asyncio.run(run())
+
+
+
 

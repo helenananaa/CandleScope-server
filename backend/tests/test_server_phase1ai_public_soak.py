@@ -781,3 +781,192 @@ def test_evidence_failure_writes_phase_passed_false(tmp_path: Path) -> None:
     assert stored["phase_passed"] is False
 
 
+def _pin_payload() -> dict[str, object]:
+    return {
+        "snapshot": {
+            "data_epoch": "epoch-1",
+            "snapshot_version": 4,
+            "manifest_uri": "s3://candlescope-archive/snapshot-4.json",
+            "manifest_sha256": "a" * 64,
+        },
+        "pin": {
+            "start_event_time_ms": 1_700_000_000_042,
+            "end_event_time_ms": 1_700_000_000_044,
+            "expected_first_agg_trade_id": 42,
+            "expected_last_agg_trade_id": 44,
+            "row_count": 3,
+        },
+    }
+
+
+class _FakeReplayTransport:
+    def __init__(self) -> None:
+        self.snapshot = _pin_payload()["snapshot"]
+        self.live_workers = 2
+        self.max_active = 2
+        self.runs: dict[str, dict[str, object]] = {}
+        self.commands: dict[str, dict[str, object]] = {}
+        self.durable_counts: dict[str, int] = {}
+        self._active = 0
+        self.created_payloads: list[dict[str, object]] = []
+
+    async def cold_query_snapshot(self, snapshot: dict[str, object]) -> dict[str, object]:
+        del snapshot
+        return {**self.snapshot, "preference": "cold"}
+
+    async def live_worker_count(self) -> int:
+        return self.live_workers
+
+    async def create_run(self, payload: dict[str, object]) -> dict[str, object]:
+        self.created_payloads.append(dict(payload))
+        run_id = str(payload["idempotency_key"])
+        if self._active < self.max_active:
+            state = "RUNNING"
+            session_id: str | None = f"sess-{run_id}"
+            self._active += 1
+        else:
+            state = "PENDING"
+            session_id = None
+        body = {
+            "run_id": run_id,
+            "state": state,
+            "session_id": session_id,
+            "organization_id": payload.get("organization_id"),
+            "workspace_id": payload.get("workspace_id"),
+        }
+        self.runs[run_id] = body
+        return body
+
+    async def get_run(self, run_id: str) -> dict[str, object]:
+        return self.runs[run_id]
+
+    async def submit_command(
+        self, session_id: str, command: dict[str, object]
+    ) -> dict[str, object]:
+        if command.get("simulate_timeout"):
+            raise TimeoutError("client timed out before the command response")
+        command_id = str(command["command_id"])
+        existing = self.commands.get(command_id)
+        if existing is not None:
+            return existing
+        result = {
+            "command_id": command_id,
+            "session_id": session_id,
+            "revision": 1,
+            "state_hash": f"hash-{command_id}",
+            "component_hash": f"comp-{command_id}",
+            "cursor": {"source_sequence": 1, "last_agg_trade_id": 42},
+        }
+        self.commands[command_id] = result
+        self.durable_counts[command_id] = 1
+        return result
+
+    async def get_command_result(
+        self, session_id: str, command_id: str
+    ) -> dict[str, object]:
+        del session_id
+        return self.commands[command_id]
+
+    def durable_command_count(self, command_id: str) -> int:
+        return int(self.durable_counts.get(command_id, 0))
+
+
+def test_replay_rejects_latest_and_query_path() -> None:
+    from app.server_runtime.public_soak_replay import (
+        ReplaySoakError,
+        parse_snapshot_pin,
+    )
+
+    latest = _pin_payload()
+    latest["snapshot"]["data_epoch"] = "latest"
+    with pytest.raises(ReplaySoakError) as rejected:
+        parse_snapshot_pin(latest)
+    assert rejected.value.code == "LATEST_SNAPSHOT_FORBIDDEN"
+    local = _pin_payload()
+    local["query_path"] = "/tmp/frozen-query.json"
+    with pytest.raises(ReplaySoakError) as path_rejected:
+        parse_snapshot_pin(local)
+    assert path_rejected.value.code == "QUERY_PATH_FORBIDDEN"
+    zero = _pin_payload()
+    zero["snapshot"]["snapshot_version"] = 0
+    with pytest.raises(ReplaySoakError) as version_rejected:
+        parse_snapshot_pin(zero)
+    assert version_rejected.value.code == "INVALID_SNAPSHOT"
+
+
+def test_replay_create_preconditions_and_three_tasks(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_replay import (
+        PublicSoakReplayDriver,
+        ReplaySoakError,
+        parse_snapshot_pin,
+    )
+
+    async def run() -> None:
+        manifest = _parsed_manifest(tmp_path)
+        transport = _FakeReplayTransport()
+        driver = PublicSoakReplayDriver(manifest, transport)
+        pin = parse_snapshot_pin(_pin_payload())
+        transport.live_workers = 1
+        with pytest.raises(ReplaySoakError) as rejected:
+            await driver.create_three_tasks(pin)
+        assert rejected.value.code == "WORKERS_NOT_LIVE"
+        transport.live_workers = 2
+        workload = await driver.create_three_tasks(pin)
+        assert workload.replay_a.state == "RUNNING"
+        assert workload.replay_b.state == "RUNNING"
+        assert workload.replay_queued.observed_queued is True
+        assert workload.replay_queued.state == "PENDING"
+        for payload in transport.created_payloads:
+            assert "query_path" not in payload
+            assert payload["organization_id"] == manifest.organization_id
+            assert payload["workspace_id"] == manifest.workspace_id
+            assert payload["snapshot"]["snapshot_version"] == 4
+
+    asyncio.run(run())
+
+
+def test_replay_commands_and_command_id_idempotency(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_replay import (
+        FROZEN_IDEMPOTENT_COMMAND_ID,
+        PublicSoakReplayDriver,
+        parse_snapshot_pin,
+    )
+
+    async def run() -> None:
+        manifest = _parsed_manifest(tmp_path)
+        transport = _FakeReplayTransport()
+        driver = PublicSoakReplayDriver(manifest, transport)
+        workload = await driver.create_three_tasks(parse_snapshot_pin(_pin_payload()))
+        observed = await driver.drive_commands(workload)
+        assert observed["replay-a-step"].revision == 1
+        assert observed["replay-b-resume"].command_id.endswith("-resume")
+        assert transport.runs["replay-queued"]["state"] == "PENDING"
+        first = await driver.probe_idempotency(workload)
+        second = await driver.probe_idempotency(workload)
+        assert first.revision == second.revision == 1
+        assert first.cursor == second.cursor
+        assert first.state_hash == second.state_hash
+        assert transport.durable_command_count(FROZEN_IDEMPOTENT_COMMAND_ID) == 1
+
+    asyncio.run(run())
+
+
+def test_replay_queued_must_be_observed(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_replay import (
+        PublicSoakReplayDriver,
+        ReplaySoakError,
+        parse_snapshot_pin,
+    )
+
+    async def run() -> None:
+        transport = _FakeReplayTransport()
+        transport.max_active = 8
+        driver = PublicSoakReplayDriver(_parsed_manifest(tmp_path), transport)
+        with pytest.raises(ReplaySoakError) as rejected:
+            await driver.create_three_tasks(parse_snapshot_pin(_pin_payload()))
+        assert rejected.value.code == "QUEUED_NOT_OBSERVED"
+
+    asyncio.run(run())
+
+
+

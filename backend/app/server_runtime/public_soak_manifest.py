@@ -195,6 +195,7 @@ def load_manifest(
     path: str | Path,
     *,
     mode: str,
+    allow_existing_output: bool = False,
 ) -> PublicSoakManifest:
     raw_path = _absolute_existing_file(path, field="manifest_path")
     try:
@@ -210,13 +211,18 @@ def load_manifest(
             "MANIFEST_JSON_INVALID",
             "manifest root must be a JSON object",
         )
-    return parse_manifest(payload, mode=mode)
+    return parse_manifest(
+        payload,
+        mode=mode,
+        allow_existing_output=allow_existing_output,
+    )
 
 
 def parse_manifest(
     payload: Mapping[str, Any],
     *,
     mode: str,
+    allow_existing_output: bool = False,
 ) -> PublicSoakManifest:
     if not isinstance(payload, Mapping):
         raise PublicSoakManifestError(
@@ -322,7 +328,10 @@ def parse_manifest(
     infrastructure = _parse_infrastructure(payload.get("infrastructure"))
     health_endpoints = _parse_health_endpoints(payload.get("health_endpoints"))
     replay_limits = _parse_replay_limits(payload.get("replay_limits"))
-    output = _parse_output(payload.get("output"))
+    output = _parse_output(
+        payload.get("output"),
+        allow_existing=allow_existing_output,
+    )
     acceptance = _parse_acceptance(payload.get("acceptance"))
     fault_plan = _parse_fault_plan(
         payload.get("fault_plan"),
@@ -480,7 +489,7 @@ def _parse_acceptance(raw: object) -> AcceptanceThresholds:
     )
 
 
-def _parse_output(raw: object) -> OutputPolicy:
+def _parse_output(raw: object, *, allow_existing: bool = False) -> OutputPolicy:
     body = _object(raw, "output")
     unknown = sorted(set(body) - {item.name for item in fields(OutputPolicy)})
     if unknown:
@@ -496,7 +505,7 @@ def _parse_output(raw: object) -> OutputPolicy:
             "output.exclusive_create must be true",
         )
     result_path = _absolute_path_text(body.get("result_path"), "result_path")
-    if Path(result_path).exists():
+    if Path(result_path).exists() and not allow_existing:
         raise PublicSoakManifestError(
             "OUTPUT_EXISTS",
             "output result_path already exists and must not be overwritten",

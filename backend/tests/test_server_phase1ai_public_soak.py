@@ -1170,5 +1170,124 @@ def test_fault_run_plan_executes_six_in_order(tmp_path: Path) -> None:
     asyncio.run(run())
 
 
+def test_cli_refuses_relative_path_and_existing_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from scripts.server_phase1ai_public_soak import main as soak_main
+
+    output = tmp_path / "out.json"
+    assert soak_main(
+        [
+            "development-smoke",
+            "--manifest",
+            "phase1ai-smoke-manifest.json",
+            "--output",
+            str(output),
+        ]
+    ) == 1
+    relative = json.loads(capsys.readouterr().out)
+    assert relative["code"] == "RELATIVE_PATH"
+    assert relative["twenty_four_hour_public_continuity"] is False
+    assert relative["production_ready"] is False
+    existing = tmp_path / "exists.json"
+    existing.write_text("{}", encoding="utf-8")
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    assert soak_main(
+        [
+            "development-smoke",
+            "--manifest",
+            str(manifest),
+            "--output",
+            str(existing),
+        ]
+    ) == 1
+    exists = json.loads(capsys.readouterr().out)
+    assert exists["code"] == "OUTPUT_EXISTS"
+
+
+def test_cli_run_refuses_missing_dual_switch_and_short_duration(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.server_phase1ai_public_soak import (
+        FAULT_INJECTION_ENV,
+        PUBLIC_SOAK_ENV,
+        main as soak_main,
+    )
+
+    payload = _base_payload(tmp_path, mode=MODE_RUN)
+    payload["duration_ms"] = 300_000
+    payload["fault_plan"] = _smoke_faults()
+    manifest = tmp_path / "run-manifest.json"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    output = Path(payload["output"]["result_path"])
+    monkeypatch.delenv(PUBLIC_SOAK_ENV, raising=False)
+    monkeypatch.delenv(FAULT_INJECTION_ENV, raising=False)
+    assert soak_main(["run", "--manifest", str(manifest), "--output", str(output)]) == 1
+    missing = json.loads(capsys.readouterr().out)
+    assert missing["code"] == "DUAL_SWITCH_MISSING"
+    monkeypatch.setenv(PUBLIC_SOAK_ENV, "1")
+    monkeypatch.setenv(FAULT_INJECTION_ENV, "1")
+    assert soak_main(["run", "--manifest", str(manifest), "--output", str(output)]) == 1
+    duration = json.loads(capsys.readouterr().out)
+    assert duration["code"] == "DURATION_BELOW_PUBLIC_SOAK"
+    assert duration["twenty_four_hour_public_continuity"] is False
+
+
+def test_cli_help_does_not_claim_24h(capsys: pytest.CaptureFixture[str]) -> None:
+    from scripts.server_phase1ai_public_soak import main as soak_main
+
+    with pytest.raises(SystemExit) as exited:
+        soak_main(["development-smoke", "--help"])
+    assert exited.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "twenty_four_hour_public_continuity=true" not in help_text
+    assert "production_ready=true" not in help_text
+
+
+def test_cli_verifier_recomputes_hashes_from_files(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak import EvidenceWriter, SoakSampler
+    from app.server_runtime.public_soak_verify import verify_evidence
+    from scripts.server_phase1ai_verify import main as verify_main
+
+    manifest = _parsed_manifest(tmp_path)
+    manifest_path = tmp_path / "phase1ai-smoke-manifest.json"
+    manifest_path.write_text(manifest.dumps(), encoding="utf-8")
+    clock = _Clock(1_700_000_000_000)
+    sampler = SoakSampler(manifest, clock_ms=clock)
+    writer = EvidenceWriter(
+        manifest,
+        mode=MODE_DEVELOPMENT_SMOKE,
+        sample_path=tmp_path / "samples" / "run.samples.jsonl",
+    )
+    writer.append_sample(sampler.observe(_role_bodies(clock.now)), fsync=True)
+    result = writer.finalize(phase_passed=True, elapsed_ms=300_000)
+    report = verify_evidence(
+        manifest_path=manifest_path,
+        result_path=manifest.output.result_path,
+        sample_path=tmp_path / "samples" / "run.samples.jsonl",
+    )
+    assert report["verified"] is True
+    assert report["final_sample_sha256"] == result["final_sample_sha256"]
+    assert report["twenty_four_hour_public_continuity"] is False
+    assert report["production_ready"] is False
+    assert (
+        verify_main(
+            [
+                "--manifest",
+                str(manifest_path),
+                "--result",
+                manifest.output.result_path,
+                "--samples",
+                str(tmp_path / "samples" / "run.samples.jsonl"),
+            ]
+        )
+        == 0
+    )
+
+
+
 
 

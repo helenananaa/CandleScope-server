@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 from app.data_engine.storage.raw_trade_archive import RawAggTradeCursor
 
 from ..errors import ReplayDomainError, ReplayErrorCode
 from .base import SourceCursor
 from .trade_reader import ReplayTrade, ReplayTradePageReader
 
+_ACTOR_DATA_EPOCH = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 POSITIONED_TAIL_PAGE_ROWS = 64
+
+
+def _actor_data_epoch(value: str) -> str:
+    """Actor checkpoints require sha256:<hex>; archive epochs are path-safe."""
+
+    if _ACTOR_DATA_EPOCH.fullmatch(value):
+        return value
+    digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
 
 
 class TradeReplaySource:
@@ -61,7 +75,7 @@ class TradeReplaySource:
         )
         payload: dict[str, object] = {
             "schema_version": "replay-trade-source-ref.v1",
-            "data_epoch": reference.data_epoch,
+            "data_epoch": _actor_data_epoch(reference.data_epoch),
             "source_kind": "agg_trade",
             "exchange": reference.exchange,
             "market_type": reference.market_type,

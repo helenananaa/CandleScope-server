@@ -975,6 +975,16 @@ def test_replay_pin_from_query_events() -> None:
     assert pin.row_count == 3
 
 
+def test_trade_source_maps_path_safe_epoch_for_actor() -> None:
+    from app.replay.sources.trade_source import _actor_data_epoch
+
+    mapped = _actor_data_epoch("phase1ai-smoke-12")
+    assert mapped.startswith("sha256:")
+    assert len(mapped) == 71
+    already = "sha256:" + ("a" * 64)
+    assert _actor_data_epoch(already) == already
+
+
 def test_replay_payload_aligns_start_to_one_minute_bar(tmp_path: Path) -> None:
     from app.server_runtime.public_soak_replay import (
         build_run_payload,

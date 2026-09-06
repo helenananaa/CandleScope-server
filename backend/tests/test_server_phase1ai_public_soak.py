@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
+import socket
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -357,3 +360,204 @@ def test_manifest_rejects_secret_keys(tmp_path: Path) -> None:
     with pytest.raises(PublicSoakManifestError) as rejected:
         parse_manifest(payload, mode=MODE_RUN)
     assert rejected.value.code == "UNKNOWN_MANIFEST_FIELD"
+
+
+_PROCESS_CHILD = r"""
+import signal
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port = int(sys.argv[1])
+mode = sys.argv[2]
+if mode == "ignore-term":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path != "/health":
+            self.send_response(404)
+            self.end_headers()
+            return
+        status = 503 if mode == "never" else 200
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ready":true}')
+        if mode == "noisy":
+            sys.stdout.write("n" * 8192)
+            sys.stdout.flush()
+
+    def log_message(self, format: str, *args: object) -> None:
+        del format, args
+
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+"""
+
+
+def _free_port() -> int:
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = int(sock.getsockname()[1])
+    sock.close()
+    return port
+
+
+def _role_spec(tmp_path: Path, name: str, port: int, mode: str, **overrides: Any):
+    from app.server_runtime.public_soak_processes import RoleSpec
+
+    values = {
+        "name": name,
+        "argv": (sys.executable, "-c", _PROCESS_CHILD, str(port), mode),
+        "sanitized_environment_keys": ("PATH", "CANDLESCOPE_PHASE1AI_API_TOKEN"),
+        "health_url": f"http://127.0.0.1:{port}/health",
+        "startup_timeout_ms": 2_000,
+        "shutdown_timeout_ms": 500,
+        "stdout_log": str(tmp_path / f"{name}.stdout.log"),
+        "stderr_log": str(tmp_path / f"{name}.stderr.log"),
+        "max_log_bytes": 2_048,
+    }
+    values.update(overrides)
+    return RoleSpec(**values)
+
+
+def _child_env() -> dict[str, str]:
+    return {
+        "PATH": "/usr/bin",
+        "CANDLESCOPE_PHASE1AI_API_TOKEN": "super-secret-token-value",
+        "CANDLESCOPE_PHASE1AI_POSTGRES_DSN": "postgresql://user:secret@127.0.0.1/db",
+    }
+
+
+def test_process_start_ready_and_sigterm(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_processes import RoleProcessManager
+
+    async def run() -> None:
+        port = _free_port()
+        spec = _role_spec(tmp_path, "collector", port, "ready")
+        manager = RoleProcessManager()
+        role = await manager.start_role(spec, _child_env())
+        assert role.pid is not None
+        assert role.exit_code is None
+        stopped = await manager.stop_role(spec)
+        assert stopped.exit_code is not None
+        events = [item["event"] for item in manager.events]
+        assert events.count("stop_sigterm") == 1
+        assert "stop_sigkill" not in events
+
+    asyncio.run(run())
+
+
+def test_process_ready_timeout(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_processes import (
+        RoleProcessError,
+        RoleProcessManager,
+    )
+
+    async def run() -> None:
+        port = _free_port()
+        spec = _role_spec(
+            tmp_path,
+            "writer",
+            port,
+            "never",
+            startup_timeout_ms=400,
+        )
+        manager = RoleProcessManager()
+        with pytest.raises(RoleProcessError) as rejected:
+            await manager.start_role(spec, _child_env())
+        assert rejected.value.code == "READY_TIMEOUT"
+        assert manager.roles["writer"].exit_code is not None
+
+    asyncio.run(run())
+
+
+def test_process_sigkill_escalate(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_processes import RoleProcessManager
+
+    async def run() -> None:
+        port = _free_port()
+        spec = _role_spec(
+            tmp_path,
+            "api",
+            port,
+            "ignore-term",
+            shutdown_timeout_ms=200,
+        )
+        manager = RoleProcessManager()
+        await manager.start_role(spec, _child_env())
+        stopped = await manager.stop_role(spec)
+        assert stopped.exit_code == -9
+        events = [item["event"] for item in manager.events]
+        assert "stop_sigterm" in events
+        assert "stop_sigkill" in events
+
+    asyncio.run(run())
+
+
+def test_process_log_bounds(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_processes import RoleProcessManager
+
+    async def run() -> None:
+        port = _free_port()
+        spec = _role_spec(
+            tmp_path,
+            "archiver",
+            port,
+            "noisy",
+            max_log_bytes=1_024,
+        )
+        manager = RoleProcessManager()
+        await manager.start_role(spec, _child_env())
+        await asyncio.sleep(0.2)
+        await manager.stop_role(spec)
+        size = Path(spec.stdout_log).stat().st_size
+        assert size <= 1_024
+
+    asyncio.run(run())
+
+
+def test_process_reverse_stop_order(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_processes import RoleProcessManager
+
+    async def run() -> None:
+        collector_port = _free_port()
+        api_port = _free_port()
+        collector = _role_spec(tmp_path, "collector", collector_port, "ready")
+        api = _role_spec(tmp_path, "api", api_port, "ready")
+        manager = RoleProcessManager()
+        await manager.start_in_order(
+            [collector, api],
+            {"collector": _child_env(), "api": _child_env()},
+        )
+        await manager.stop_in_reverse([collector, api])
+        stops = [
+            item["role"]
+            for item in manager.events
+            if item["event"] == "stop_sigterm"
+        ]
+        assert stops == ["api", "collector"]
+
+    asyncio.run(run())
+
+
+def test_process_does_not_keep_secrets(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_processes import RoleProcessManager
+
+    async def run() -> None:
+        port = _free_port()
+        spec = _role_spec(tmp_path, "scheduler", port, "ready")
+        manager = RoleProcessManager()
+        role = await manager.start_role(spec, _child_env())
+        try:
+            dumped = json.dumps(role.to_evidence()) + repr(manager) + repr(role)
+            assert "super-secret-token-value" not in dumped
+            assert "postgresql://user:secret" not in dumped
+            assert "CANDLESCOPE_PHASE1AI_API_TOKEN" in role.present_environment_keys
+        finally:
+            await manager.stop_role(spec)
+
+    asyncio.run(run())
+

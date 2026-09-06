@@ -187,8 +187,7 @@ class SoakFaultMachine:
                 FaultStatus.RECOVERY_OBSERVED,
                 "RECOVERY_TIMEOUT",
             )
-            quiet = await self._actuator.quiet_observation()
-            verify_quiet_checkpoint(quiet)
+            await self._wait_quiet(record)
             self._transition(record, FaultStatus.QUIET_CHECKPOINT_VERIFIED)
         except FaultMachineError as exc:
             record.error_code = exc.code
@@ -214,6 +213,23 @@ class SoakFaultMachine:
             timeout_code,
             f"{record.spec.fault_id} timed out waiting for {success.value}",
             details={"fault_id": record.spec.fault_id},
+        )
+
+    async def _wait_quiet(self, record: FaultRecord) -> None:
+        timeout_ms = self._manifest.quiet_checkpoint_timeout_ms
+        deadline = self._clock_ms() + timeout_ms
+        last_error: FaultMachineError | None = None
+        while self._clock_ms() < deadline:
+            quiet = await self._actuator.quiet_observation()
+            try:
+                verify_quiet_checkpoint(quiet)
+                return
+            except FaultMachineError as exc:
+                last_error = exc
+                await self._sleep(0.2)
+        raise last_error or FaultMachineError(
+            "QUIET_CHECKPOINT_TIMEOUT",
+            f"{record.spec.fault_id} quiet checkpoint did not converge",
         )
 
     def _transition(self, record: FaultRecord, target: FaultStatus) -> None:

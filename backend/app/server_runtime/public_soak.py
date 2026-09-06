@@ -941,8 +941,17 @@ class ProcessFaultActuator:
         return live is not None and live.returncode is None
 
     async def quiet_observation(self):
+        import aiohttp
+
         from app.server_runtime.soak_faults import QuietObservation
 
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=2)
+        ) as session:
+            bodies, _sizes = await _scrape_roles(
+                session, self._manifest.health_endpoints
+            )
+        self.last_bodies = bodies
         collector = self._offset("collector", "last_partition_offset")
         if collector is not None:
             collector += 1

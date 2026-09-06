@@ -730,6 +730,13 @@ async def _wait_archive_caught_up(
             archive = bodies.get("archiver") or {}
             writer_next = writer.get("committed_next_offset")
             archive_next = archive.get("committed_next_offset")
+            archive_error = archive.get("terminal_error") or archive.get("error")
+            if archive.get("ready") is False and archive_error:
+                raise SoakObservationError(
+                    "ARCHIVER_TERMINAL",
+                    "archiver stopped before catch-up",
+                    details={"error": str(archive_error)},
+                )
             if (
                 isinstance(writer_next, int)
                 and isinstance(archive_next, int)
@@ -897,6 +904,11 @@ def _role_child_env(
         "PYTHONPATH", str(Path(repo_root_from_manifest(manifest)) / "backend")
     )
     env["PYTHONUNBUFFERED"] = "1"
+    env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_DATA_EPOCH"] = manifest.run_id
+    env["CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_KAFKA_GROUP_ID"] = f"{manifest.run_id}-writer"
+    env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_KAFKA_GROUP_ID"] = (
+        f"{manifest.run_id}-archiver"
+    )
     if name == "api":
         env["CANDLESCOPE_PROFILE"] = "server"
     if name == "worker_b":

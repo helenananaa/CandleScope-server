@@ -564,7 +564,8 @@ async def execute_public_soak(
             hook_dir=manifest.output.log_dir,
         )
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=2)
+            timeout=aiohttp.ClientTimeout(total=2),
+            trust_env=False,
         ) as session:
             while clock() - started_at_ms < manifest.duration_ms:
                 bodies, raw_sizes = await _scrape_roles(
@@ -691,7 +692,7 @@ def build_role_specs(
                 argv=tuple(argv),
                 sanitized_environment_keys=_SANITIZED_KEYS,
                 health_url=manifest.health_endpoints[name],
-                startup_timeout_ms=60_000,
+                startup_timeout_ms=120_000 if name == "api" else 60_000,
                 shutdown_timeout_ms=8_000,
                 stdout_log=str(log_dir / f"{name}.stdout.log"),
                 stderr_log=str(log_dir / f"{name}.stderr.log"),
@@ -946,7 +947,8 @@ class ProcessFaultActuator:
         from app.server_runtime.soak_faults import QuietObservation
 
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=2)
+            timeout=aiohttp.ClientTimeout(total=2),
+            trust_env=False,
         ) as session:
             bodies, _sizes = await _scrape_roles(
                 session, self._manifest.health_endpoints

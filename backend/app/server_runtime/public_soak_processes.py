@@ -443,8 +443,8 @@ async def _default_health_probe(url: str) -> tuple[int, bytes]:
     if parsed_host not in LOOPBACK_HOSTS:
         raise RoleProcessError("HEALTH_URL_UNSAFE", "health probe host is not loopback")
     timeout = aiohttp.ClientTimeout(total=0.5)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as response:
+    async with aiohttp.ClientSession(timeout=timeout, trust_env=False) as session:
+        async with session.get(url, allow_redirects=False) as response:
             return response.status, await response.read()
 
 

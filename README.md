@@ -37,18 +37,20 @@ streams, built-in indicators, and Pine-style Python scripting through Pyne.
 
 This repository is the public development line for the CandleScope server
 profile. The implementation and verification artifacts currently extend through
-**Phase 1AC**.
+**Phase 1AH**.
 
 | Area | Current boundary |
 |---|---|
 | Personal profile | Remains runnable with the local SQLite, in-process, and local-file architecture. |
 | Server data plane | Contracts and gates cover durable event publication, ClickHouse projection, immutable Parquet archive, cold snapshot queries, health/reconciliation, and composition checks. |
-| Server identity and replay | Organization/workspace-scoped query identity, PostgreSQL replay-session leases, fencing, and lease-bound cold snapshot loading are implemented. |
-| Production readiness | Not yet claimed. `CANDLESCOPE_PROFILE=server` remains fail-closed. There is no Replay Worker pool, scheduler, HTTP replay API, or completed 24-hour public continuity proof. |
+| Server identity and replay | Organization/workspace-scoped identity, PostgreSQL leases and fencing, a durable scheduler, authenticated cold-query Replay Workers, and an HTTP/WS replay facade are implemented. |
+| Server profile | `CANDLESCOPE_PROFILE=server` has a distinct composition root and a local Compose takeover gate. It does not retain personal SQLite/settings/debug routes or fall back to personal data sources. |
+| Production readiness | Not yet claimed. A single full-role integration chain and the 24-hour public Binance continuity/fault-injection proof remain incomplete; `production_ready` stays `false`. |
 
 Start with the [server product contract](docs/server/CANDLESCOPE_SERVER_PRODUCT_CONTRACT_zh.md),
-[architecture](docs/server/CANDLESCOPE_SERVER_ARCHITECTURE_zh.md), and the
-[Phase 1AC execution record](docs/server/CANDLESCOPE_SERVER_PHASE1AC_EXECUTION_zh.md).
+[architecture](docs/server/CANDLESCOPE_SERVER_ARCHITECTURE_zh.md), the
+[Phase 1AH execution record](docs/server/CANDLESCOPE_SERVER_PHASE1AH_EXECUTION_zh.md),
+and the [Phase 1AD–1AI execution plan](docs/server/CANDLESCOPE_SERVER_PHASE1AD_TO_1AI_EXECUTION_zh.md).
 Machine-readable phase evidence is stored under [`docs/server/evidence`](docs/server/evidence).
 
 Clone this server repository with:
@@ -60,7 +62,8 @@ git clone https://github.com/helenananaa/CandleScope-server.git
 ## Quick Start
 
 > The commands in this section start the runnable **personal** profile. They do
-> not unlock the server profile or replace its external infrastructure gates.
+> not configure the server profile's external dependencies or replace its
+> integration and production gates.
 
 Requirements:
 

@@ -1,0 +1,55 @@
+{
+  "schema_version": "candlescope.server-phase1ah-remediation-verification.v1",
+  "captured_at_utc": "2026-09-04T11:53:38Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "e2a900bab745fa4d8b90d7bc2419c311bc2ec943",
+  "worktree_clean": false,
+  "remediation_passed": true,
+  "production_ready": false,
+  "remediations": {
+    "cancel_authorized_before_mutation": true,
+    "run_list_is_scope_filtered": true,
+    "client_query_path_rejected": true,
+    "worker_uses_authenticated_query_service": true,
+    "worker_claim_is_scope_filtered": true,
+    "personal_routes_removed_from_server_profile": true,
+    "query_service_is_required_for_readiness": true
+  },
+  "gates": [
+    {
+      "name": "focused replay and profile regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1ah_query_client.py backend/tests/test_server_phase1ae_replay_worker.py backend/tests/test_server_phase1af_replay_scheduler.py backend/tests/test_server_phase1ah_profile.py backend/tests/test_server_phase1ag_replay_api.py backend/tests/test_server_phase1w_composition.py",
+      "result": "30 passed"
+    },
+    {
+      "name": "Phase 1AH Compose integration",
+      "command": "CANDLESCOPE_PHASE1AH_INTEGRATION=1 CANDLESCOPE_PHASE1AH_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1ah_profile.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "all Server Phase and personal replay regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase*.py backend/tests/test_replay_service.py backend/tests/test_replay_trade_service.py backend/tests/test_replay_recovery.py backend/tests/test_replay_shutdown.py",
+      "result": "329 passed"
+    },
+    {
+      "name": "changed Python lint and format",
+      "command": "uvx ruff check and uvx ruff format --check on the remediation Python allowlist",
+      "result": "passed"
+    },
+    {
+      "name": "Git whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "remaining_gaps": [
+    "one Phase 1AH test does not yet launch the real collector, writer, archiver, and Query Service together with Replay Workers",
+    "Phase 1AI public Binance 24-hour continuity has not started",
+    "the remediation patch is not committed"
+  ],
+  "claims_not_made": [
+    "production-ready",
+    "full-role end-to-end integration complete",
+    "twenty_four_hour_public_continuity"
+  ]
+}

@@ -124,6 +124,14 @@ class ReplaySchedulerStore(Protocol):
 
     async def get_request(self, request_id: str) -> ReplaySchedulerRequest | None: ...
 
+    async def list_requests(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        *,
+        limit: int,
+    ) -> tuple[ReplaySchedulerRequest, ...]: ...
+
     async def count_open(self, organization_id: str) -> tuple[int, int]: ...
 
     async def heartbeat(
@@ -131,7 +139,12 @@ class ReplaySchedulerStore(Protocol):
     ) -> None: ...
 
     async def claim_next(
-        self, worker_id: str, *, now_ms: int
+        self,
+        worker_id: str,
+        *,
+        now_ms: int,
+        organization_id: str | None,
+        workspace_id: str | None,
     ) -> ReplaySchedulerAssignment | None: ...
 
     async def transition(
@@ -228,10 +241,29 @@ class ReplayScheduler:
             ttl_ms=self._heartbeat_ttl_ms,
         )
 
-    async def claim(self, worker_id: str) -> ReplaySchedulerAssignment | None:
+    async def claim(
+        self,
+        worker_id: str,
+        *,
+        organization_id: str | None = None,
+        workspace_id: str | None = None,
+    ) -> ReplaySchedulerAssignment | None:
         worker_id = normalize_replay_worker_id(worker_id)
+        if (organization_id is None) != (workspace_id is None):
+            raise ReplaySchedulerError(
+                "SCHEDULER_INVALID_WORKER_SCOPE",
+                "worker organization and workspace must be supplied together",
+            )
+        if organization_id is not None:
+            organization_id = normalize_organization_id(organization_id)
+            workspace_id = normalize_workspace_id(workspace_id)
         await self._store.expire_workers_and_timeouts(now_ms=self._clock_ms())
-        return await self._store.claim_next(worker_id, now_ms=self._clock_ms())
+        return await self._store.claim_next(
+            worker_id,
+            now_ms=self._clock_ms(),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
 
     async def cancel(self, request_id: str) -> ReplaySchedulerRequest:
         current = await self._require(request_id)
@@ -284,15 +316,37 @@ class ReplayScheduler:
     async def get_request(self, request_id: str) -> ReplaySchedulerRequest | None:
         return await self._store.get_request(request_id)
 
+    async def list_requests(
+        self,
+        *,
+        organization_id: str,
+        workspace_id: str,
+        limit: int = 100,
+    ) -> tuple[ReplaySchedulerRequest, ...]:
+        organization_id = normalize_organization_id(organization_id)
+        workspace_id = normalize_workspace_id(workspace_id)
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 100
+        ):
+            raise ReplaySchedulerError(
+                "SCHEDULER_INVALID_LIST_LIMIT",
+                "list limit must be between 1 and 100",
+            )
+        return await self._store.list_requests(
+            organization_id,
+            workspace_id,
+            limit=limit,
+        )
+
     async def get_by_session(self, session_id: str) -> ReplaySchedulerRequest | None:
         getter = getattr(self._store, "get_by_session", None)
         if getter is None:
             return None
         return await getter(session_id)
 
-    async def get_assignment(
-        self, session_id: str
-    ) -> ReplaySchedulerAssignment | None:
+    async def get_assignment(self, session_id: str) -> ReplaySchedulerAssignment | None:
         getter = getattr(self._store, "get_assignment", None)
         if getter is None:
             return None
@@ -303,9 +357,7 @@ class ReplayScheduler:
     ) -> None:
         await self._store.enqueue_command(session_id, payload)
 
-    async def list_commands(
-        self, session_id: str
-    ) -> tuple[Mapping[str, object], ...]:
+    async def list_commands(self, session_id: str) -> tuple[Mapping[str, object], ...]:
         return await self._store.list_commands(session_id)
 
     async def live_worker_count(self) -> int:

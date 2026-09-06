@@ -5,8 +5,13 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from app.server_runtime.health_http import parse_health_bind
+from app.server_runtime.query_identity import (
+    normalize_organization_id,
+    normalize_workspace_id,
+)
 from app.server_runtime.replay_lease import normalize_replay_worker_id
 
 ENV_PREFIX = "CANDLESCOPE_SERVER_REPLAY_WORKER_"
@@ -21,6 +26,10 @@ class ReplayWorkerSettings:
     worker_id: str
     postgres_dsn: str = field(repr=False)
     query_credential: str = field(repr=False)
+    organization_id: str
+    workspace_id: str
+    query_url: str = "http://127.0.0.1:8110"
+    query_request_timeout_ms: int = 10_000
     lease_ttl_ms: int = 15_000
     renew_interval_ms: int = 5_000
     max_actors: int = 1
@@ -45,7 +54,20 @@ class ReplayWorkerSettings:
         object.__setattr__(self, "postgres_dsn", dsn)
         object.__setattr__(self, "query_credential", credential)
         object.__setattr__(self, "worker_control_token", token)
+        object.__setattr__(
+            self,
+            "organization_id",
+            normalize_organization_id(self.organization_id),
+        )
+        object.__setattr__(
+            self,
+            "workspace_id",
+            normalize_workspace_id(self.workspace_id),
+        )
+        query_url = _absolute_http_url(self.query_url, field="query_url")
+        object.__setattr__(self, "query_url", query_url)
         for name in (
+            "query_request_timeout_ms",
             "lease_ttl_ms",
             "renew_interval_ms",
             "max_actors",
@@ -73,6 +95,8 @@ class ReplayWorkerSettings:
         return (
             "ReplayWorkerSettings("
             f"worker_id={self.worker_id!r}, "
+            f"organization_id={self.organization_id!r}, "
+            f"workspace_id={self.workspace_id!r}, "
             f"lease_ttl_ms={self.lease_ttl_ms}, "
             f"renew_interval_ms={self.renew_interval_ms}, "
             f"health_bind={self.health_bind!r})"
@@ -89,7 +113,13 @@ class ReplayWorkerSettings:
             worker_id=_required_env(values, "WORKER_ID"),
             postgres_dsn=_required_env(values, "POSTGRES_DSN"),
             query_credential=_required_env(values, "QUERY_CREDENTIAL"),
+            organization_id=_required_env(values, "ORGANIZATION_ID"),
+            workspace_id=_required_env(values, "WORKSPACE_ID"),
+            query_url=_required_env(values, "QUERY_URL"),
             worker_control_token=_required_env(values, "CONTROL_TOKEN"),
+            query_request_timeout_ms=_optional_int(
+                values, "QUERY_REQUEST_TIMEOUT_MS", 10_000
+            ),
             lease_ttl_ms=_optional_int(values, "LEASE_TTL_MS", 15_000),
             renew_interval_ms=_optional_int(values, "RENEW_INTERVAL_MS", 5_000),
             max_actors=_optional_int(values, "MAX_ACTORS", 1),
@@ -123,6 +153,18 @@ def _required_text(value: object, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ReplayWorkerConfigurationError(f"{field} must be a non-blank string")
     return value.strip()
+
+
+def _absolute_http_url(value: object, *, field: str) -> str:
+    normalized = _required_text(value, field=field).rstrip("/")
+    parsed = urlsplit(normalized)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ReplayWorkerConfigurationError(f"{field} must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ReplayWorkerConfigurationError(
+            f"{field} cannot contain credentials, query, or fragment"
+        )
+    return normalized
 
 
 def _positive_int(value: object, *, field: str) -> int:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -91,6 +92,10 @@ def test_capabilities_and_auth_matrix() -> None:
     assert created.status_code == 200
     body = created.json()
     assert body["state"] in {"PENDING", "ASSIGNED"}
+    stored = asyncio.run(_scheduler.get_request(body["run_id"]))
+    assert stored is not None
+    assert stored.payload["organization_id"] == "org-alpha"
+    assert stored.payload["workspace_id"] == "ws-research"
     other = client.get(
         f"/api/v1/replay/runs/{body['run_id']}",
         headers={"Authorization": "Bearer token-other"},
@@ -101,6 +106,13 @@ def test_capabilities_and_auth_matrix() -> None:
         headers={"Authorization": "Bearer token-read-only-a"},
     )
     assert listed.status_code == 200
+    assert [item["run_id"] for item in listed.json()["runs"]] == [body["run_id"]]
+    other_list = client.get(
+        "/api/v1/replay/runs",
+        headers={"Authorization": "Bearer token-other"},
+    )
+    assert other_list.status_code == 200
+    assert other_list.json()["runs"] == []
     inventory = client.get("/api/v1/replay/inventory").json()
     assert inventory["endpoints"]["GET /api/v1/replay/capabilities"] == "implemented"
 
@@ -163,3 +175,34 @@ def test_command_requires_write_role() -> None:
         headers={"Authorization": "Bearer token-read-only-a"},
     )
     assert response.status_code == 403
+
+
+def test_cross_tenant_cancel_is_denied_before_state_change() -> None:
+    client, _scheduler = _app()
+    created = client.post(
+        "/api/v1/replay/runs",
+        json={"idempotency_key": "cross-tenant-cancel", "source_kind": "agg_trade"},
+        headers={"Authorization": "Bearer token-trader-a"},
+    )
+    run_id = created.json()["run_id"]
+    denied = client.delete(
+        f"/api/v1/replay/runs/{run_id}",
+        headers={"Authorization": "Bearer token-other"},
+    )
+    assert denied.status_code == 403
+    unchanged = client.get(
+        f"/api/v1/replay/runs/{run_id}",
+        headers={"Authorization": "Bearer token-trader-a"},
+    )
+    assert unchanged.json()["state"] == "PENDING"
+
+
+def test_server_create_rejects_local_query_path() -> None:
+    client, _scheduler = _app()
+    denied = client.post(
+        "/api/v1/replay/runs",
+        json={"idempotency_key": "local-path", "query_path": "/tmp/query.json"},
+        headers={"Authorization": "Bearer token-trader-a"},
+    )
+    assert denied.status_code == 409
+    assert denied.json()["error"]["code"] == "INVALID_STATE_TRANSITION"

@@ -112,6 +112,28 @@ class PostgresReplaySchedulerStore:
             row = await cursor.fetchone()
             return None if row is None else _row_to_request(row)
 
+    async def list_requests(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        *,
+        limit: int,
+    ) -> tuple[ReplaySchedulerRequest, ...]:
+        async with (
+            await self._connect() as connection,
+            connection.cursor() as cursor,
+        ):
+            await cursor.execute(
+                f"""
+                SELECT * FROM {REQUEST_TABLE}
+                WHERE organization_id = %s AND workspace_id = %s
+                ORDER BY created_at DESC, request_id DESC
+                LIMIT %s
+                """,
+                (organization_id, workspace_id, limit),
+            )
+            return tuple(_row_to_request(row) for row in await cursor.fetchall())
+
     async def count_open(self, organization_id: str) -> tuple[int, int]:
         async with (
             await self._connect() as connection,
@@ -155,7 +177,12 @@ class PostgresReplaySchedulerStore:
             )
 
     async def claim_next(
-        self, worker_id: str, *, now_ms: int
+        self,
+        worker_id: str,
+        *,
+        now_ms: int,
+        organization_id: str | None,
+        workspace_id: str | None,
     ) -> ReplaySchedulerAssignment | None:
         del now_ms
         async with (
@@ -174,6 +201,11 @@ class PostgresReplaySchedulerStore:
             worker = await cursor.fetchone()
             if worker is None or worker["active_sessions"] >= worker["capacity"]:
                 return None
+            scope_clause = ""
+            scope_params: tuple[str, ...] = ()
+            if organization_id is not None and workspace_id is not None:
+                scope_clause = "AND organization_id = %s AND workspace_id = %s"
+                scope_params = (organization_id, workspace_id)
             await cursor.execute(
                 f"""
                 SELECT request_id, attempt, session_id, state
@@ -190,10 +222,12 @@ class PostgresReplaySchedulerStore:
                         )
                     )
                 )
+                {scope_clause}
                 ORDER BY priority DESC, created_at ASC
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
-                """
+                """,
+                scope_params,
             )
             request = await cursor.fetchone()
             if request is None:
@@ -316,9 +350,7 @@ class PostgresReplaySchedulerStore:
             )
             return orphaned + (cursor.rowcount or 0)
 
-    async def get_by_session(
-        self, session_id: str
-    ) -> ReplaySchedulerRequest | None:
+    async def get_by_session(self, session_id: str) -> ReplaySchedulerRequest | None:
         async with (
             await self._connect() as connection,
             connection.cursor() as cursor,
@@ -330,9 +362,7 @@ class PostgresReplaySchedulerStore:
             row = await cursor.fetchone()
             return None if row is None else _row_to_request(row)
 
-    async def get_assignment(
-        self, session_id: str
-    ) -> ReplaySchedulerAssignment | None:
+    async def get_assignment(self, session_id: str) -> ReplaySchedulerAssignment | None:
         async with (
             await self._connect() as connection,
             connection.cursor() as cursor,
@@ -376,9 +406,7 @@ class PostgresReplaySchedulerStore:
                 (session_id, command_id, Jsonb(dict(payload))),
             )
 
-    async def list_commands(
-        self, session_id: str
-    ) -> tuple[Mapping[str, object], ...]:
+    async def list_commands(self, session_id: str) -> tuple[Mapping[str, object], ...]:
         async with (
             await self._connect() as connection,
             connection.cursor() as cursor,
@@ -518,9 +546,9 @@ async def apply_scheduler_migration(
                 COMMAND_JOURNAL_TABLE,
             ):
                 await cursor.execute(
-                    sql.SQL(
-                        "GRANT SELECT, INSERT, UPDATE ON TABLE {} TO {}"
-                    ).format(sql.Identifier(table), sql.Identifier(runtime_login_role))
+                    sql.SQL("GRANT SELECT, INSERT, UPDATE ON TABLE {} TO {}").format(
+                        sql.Identifier(table), sql.Identifier(runtime_login_role)
+                    )
                 )
 
 

@@ -173,7 +173,10 @@ async def attach_server_profile(
         service=service,
     )
     server_app = build_server_replay_app(service, verifier)
-    app.router.routes[0:0] = list(server_app.router.routes)
+    # Server Profile is a distinct public surface. Reusing the parent FastAPI
+    # object preserves middleware and lifespan hooks, but none of the personal
+    # settings/storage/debug/live routes may remain reachable.
+    app.router.routes[:] = list(server_app.router.routes)
     for exc_type, handler in server_app.exception_handlers.items():
         app.add_exception_handler(exc_type, handler)
     _mount_profile_health(app, runtime)

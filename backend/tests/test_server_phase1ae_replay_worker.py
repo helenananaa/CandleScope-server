@@ -204,6 +204,8 @@ def _settings(worker_id: str = "worker-a") -> ReplayWorkerSettings:
         postgres_dsn="postgresql://replay:worker-secret@localhost:25432/candlescope",
         query_credential="query-token-aaaa",
         worker_control_token="control-token-bbbb",
+        organization_id=AUTH_ORG,
+        workspace_id=AUTH_WS,
         lease_ttl_ms=3_000,
         renew_interval_ms=1_000,
         shutdown_timeout_ms=1_000,
@@ -261,6 +263,8 @@ def test_worker_settings_reject_short_ttl_and_redact_secrets() -> None:
             postgres_dsn="postgresql://replay:secret@localhost/db",
             query_credential="query-token",
             worker_control_token="control-token",
+            organization_id=AUTH_ORG,
+            workspace_id=AUTH_WS,
             lease_ttl_ms=1_000,
             renew_interval_ms=500,
         )
@@ -270,6 +274,8 @@ def test_worker_settings_reject_short_ttl_and_redact_secrets() -> None:
             postgres_dsn="postgresql://replay:secret@localhost/db",
             query_credential="query-token",
             worker_control_token="control-token",
+            organization_id=AUTH_ORG,
+            workspace_id=AUTH_WS,
             health_bind="0.0.0.0:80",
         )
     settings = _settings()
@@ -287,6 +293,39 @@ def test_worker_settings_reject_short_ttl_and_redact_secrets() -> None:
         runtime_login_role="candlescope_replay_app",
     )
     assert "super-secret" not in repr(migrator)
+
+
+def test_worker_settings_require_a_safe_query_service_url() -> None:
+    environment = {
+        "CANDLESCOPE_SERVER_REPLAY_WORKER_WORKER_ID": "worker-a",
+        "CANDLESCOPE_SERVER_REPLAY_WORKER_POSTGRES_DSN": (
+            "postgresql://replay:worker-secret@localhost:25432/candlescope"
+        ),
+        "CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_CREDENTIAL": "query-token-aaaa",
+        "CANDLESCOPE_SERVER_REPLAY_WORKER_CONTROL_TOKEN": "control-token-bbbb",
+        "CANDLESCOPE_SERVER_REPLAY_WORKER_ORGANIZATION_ID": AUTH_ORG,
+        "CANDLESCOPE_SERVER_REPLAY_WORKER_WORKSPACE_ID": AUTH_WS,
+    }
+    with pytest.raises(ReplayWorkerConfigurationError, match="QUERY_URL"):
+        ReplayWorkerSettings.from_env(environment)
+
+    configured = ReplayWorkerSettings.from_env(
+        {
+            **environment,
+            "CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_URL": "http://127.0.0.1:8110/",
+        }
+    )
+    assert configured.query_url == "http://127.0.0.1:8110"
+
+    with pytest.raises(ReplayWorkerConfigurationError, match="credentials"):
+        ReplayWorkerSettings.from_env(
+            {
+                **environment,
+                "CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_URL": (
+                    "http://embedded:secret@127.0.0.1:8110"
+                ),
+            }
+        )
 
 
 def test_migration_sql_pins_tables_and_checksum() -> None:

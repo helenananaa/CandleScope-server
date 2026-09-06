@@ -31,10 +31,13 @@ from app.server_runtime.storage.postgres_replay_scheduler import (
 from app.server_runtime.storage.postgres_replay_session import (
     PostgresReplaySessionStore,
 )
-from app.server_runtime.testing.frozen_agg_trade_query import FrozenAggTradeQuery
 
 
 async def _run(args: argparse.Namespace) -> None:
+    # Explicit-assignment mode is retained only for the Phase 1AE deterministic
+    # takeover gate. Scheduler pool mode uses the authenticated Query Service.
+    from app.server_runtime.testing.frozen_agg_trade_query import FrozenAggTradeQuery
+
     settings = ReplayWorkerSettings.from_env()
     assignment = json.loads(Path(args.assignment).read_text(encoding="utf-8"))
     query = FrozenAggTradeQuery(Path(assignment["query_path"]))

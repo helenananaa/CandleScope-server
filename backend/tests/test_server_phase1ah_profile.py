@@ -24,7 +24,7 @@ from app.replay.models import (
     SlippageModel,
 )
 from app.server_runtime.access_identity import ServerPrincipal
-from app.server_runtime.application import STATUS
+from app.server_runtime.application import STATUS, attach_server_profile
 from app.server_runtime.composition import (
     fastapi_unlock_status,
     load_server_data_plane_composition,
@@ -32,13 +32,18 @@ from app.server_runtime.composition import (
 from app.server_runtime.replay_api_service import ServerReplayApiService
 from app.server_runtime.replay_event_stream import ReplayEventStream
 from app.server_runtime.replay_scheduler import ReplayScheduler
-from app.server_runtime.replay_worker_pool import ReplayWorkerPoolLoop
+from app.server_runtime.replay_worker_pool import (
+    ReplayWorkerPoolLoop,
+    server_query_from_payload,
+)
 from app.server_runtime.replay_worker_settings import ReplayWorkerSettings
 from app.server_runtime.testing import (
+    FrozenAggTradeQuery,
     InMemoryReplaySchedulerStore,
     InMemoryReplaySessionLeaseStore,
     InMemoryReplaySessionStore,
 )
+from fastapi import FastAPI
 from scripts import server_composition_check
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
@@ -79,6 +84,8 @@ def _complete_env(**overrides: str) -> dict[str, str]:
         "CANDLESCOPE_SERVER_QUERY_S3_ACCESS_KEY_ID": "access",
         "CANDLESCOPE_SERVER_QUERY_S3_SECRET_ACCESS_KEY": "secret",
         "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": TOKEN_A,
+        "CANDLESCOPE_SERVER_QUERY_AUTH_ORGANIZATION_ID": "org-alpha",
+        "CANDLESCOPE_SERVER_QUERY_AUTH_WORKSPACE_ID": "ws-research",
         "CANDLESCOPE_SERVER_QUERY_CONTROL_BEARER_TOKEN": TOKEN_B,
         "CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN": "postgresql://query@localhost:15432/candlescope",
         "CANDLESCOPE_SERVER_QUERY_INSTANCE_ID": "query-a",
@@ -199,7 +206,7 @@ def test_server_startup_does_not_open_sqlite(
     assert main_module.app.state.deployment_profile == "server"
 
 
-def _payload(query_path: Path) -> dict[str, object]:
+def _payload() -> dict[str, object]:
     config = ReplaySessionConfig(
         protocol=REPLAY_PROTOCOL,
         source_kind=SourceKind.AGG_TRADE,
@@ -253,7 +260,6 @@ def _payload(query_path: Path) -> dict[str, object]:
     return {
         "idempotency_key": "unit-1",
         "source_kind": "agg_trade",
-        "query_path": str(query_path),
         "organization_id": "org-alpha",
         "workspace_id": "ws-research",
         "snapshot": {
@@ -305,6 +311,8 @@ def test_in_memory_worker_pool_serves_authenticated_command(tmp_path: Path) -> N
             postgres_dsn="postgresql://replay:worker-secret@localhost:25432/candlescope",
             query_credential="query-token-aaaa",
             worker_control_token="control-token-bbbb",
+            organization_id="org-alpha",
+            workspace_id="ws-research",
             lease_ttl_ms=30_000,
             renew_interval_ms=5_000,
             poll_interval_ms=50,
@@ -315,6 +323,7 @@ def test_in_memory_worker_pool_serves_authenticated_command(tmp_path: Path) -> N
             scheduler=scheduler,
             lease_store=lease_store,
             session_store=session_store,
+            query_factory=lambda _payload: FrozenAggTradeQuery(query_path),
         )
         principal = ServerPrincipal(
             subject="trader",
@@ -344,9 +353,7 @@ def test_in_memory_worker_pool_serves_authenticated_command(tmp_path: Path) -> N
         assert live["production_ready"] is False
         task = asyncio.create_task(pool.run())
         try:
-            created = await service.create_run(
-                _payload(query_path), principal=principal
-            )
+            created = await service.create_run(_payload(), principal=principal)
             session_id = None
             for _ in range(80):
                 fetched = await service.get_run(created["run_id"], principal=principal)
@@ -384,3 +391,64 @@ def test_application_module_does_not_import_sqlite_runtime() -> None:
     assert "ReplaySQLiteStore" not in source
     assert "init_klines_storage" not in source
     assert inspect.getsource(refuse_server_sqlite_boot)
+
+
+def test_worker_query_scope_must_match_scheduler_payload() -> None:
+    settings = ReplayWorkerSettings(
+        worker_id="worker-a",
+        postgres_dsn="postgresql://replay:worker-secret@localhost/db",
+        query_credential="query-token-aaaa",
+        worker_control_token="control-token-bbbb",
+        organization_id="org-alpha",
+        workspace_id="ws-research",
+    )
+    with pytest.raises(ValueError, match="outside the Worker query scope"):
+        server_query_from_payload(
+            settings,
+            {"organization_id": "org-beta", "workspace_id": "ws-research"},
+        )
+
+
+def test_attach_server_profile_replaces_personal_routes() -> None:
+    app = FastAPI()
+
+    @app.put("/api/v1/settings/proxy")
+    async def personal_settings() -> dict[str, bool]:
+        return {"personal": True}
+
+    @app.get("/debug/snapshot")
+    async def personal_debug() -> dict[str, bool]:
+        return {"personal": True}
+
+    environment = _complete_env(
+        CANDLESCOPE_SERVER_REPLAY_SCHEDULER_POSTGRES_DSN=(
+            "postgresql://replay@localhost:15432/candlescope"
+        ),
+        CANDLESCOPE_SERVER_API_STATIC_TOKENS_JSON=json.dumps(
+            {
+                "server-token": {
+                    "subject": "server-user",
+                    "organization_id": "org-alpha",
+                    "workspace_id": "ws-research",
+                    "role": "admin",
+                    "credential_id": "credential-a",
+                }
+            }
+        ),
+    )
+
+    async def _attach() -> None:
+        runtime = await attach_server_profile(
+            app,
+            load_deployment_settings({"CANDLESCOPE_PROFILE": "server"}),
+            load_server_data_plane_composition(environment),
+            environment=environment,
+        )
+        paths = {route.path for route in app.routes}
+        assert "/api/v1/settings/proxy" not in paths
+        assert "/debug/snapshot" not in paths
+        assert "/api/v1/replay/capabilities" in paths
+        assert "/health/ready" in paths
+        await runtime.stop()
+
+    asyncio.run(_attach())

@@ -174,7 +174,26 @@ def load_server_data_plane_composition(
             "OBJECT_STORE_DRIFT",
             "Parquet archiver and snapshot query must share S3 endpoint and bucket",
         )
+    if query.auth_organization_id is None or query.auth_workspace_id is None:
+        raise ServerCompositionError(
+            "QUERY_SCOPE_UNBOUND",
+            "Server Profile query credentials must bind an organization and workspace",
+            details={"role": "snapshot_query"},
+        )
     health_binds = _optional_health_binds(values)
+    # The query API is a mandatory part of every Server Profile replay path,
+    # so readiness must observe its own bind even when optional role-health
+    # environment variables are absent.
+    query_health_bind = f"{query.bind_host}:{query.bind_port}"
+    try:
+        parse_health_bind(query_health_bind)
+    except HealthHttpBindError as exc:
+        raise ServerCompositionError(
+            "HEALTH_BIND_INVALID",
+            "snapshot query bind is not a loopback HOST:PORT",
+            details={"role": "snapshot_query", "message": str(exc)},
+        ) from exc
+    health_binds["snapshot_query"] = query_health_bind
     return ServerDataPlaneComposition(
         collector=collector,
         clickhouse_writer=writer,

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Mapping
-from pathlib import Path
 
 from app.replay.broker.models import BrokerConfig
 from app.replay.errors import ReplayDomainError, ReplayErrorCode
 from app.replay.models import ReplayCommand, ReplaySessionConfig
 from app.server_contracts import MarketDataSnapshotRef, MarketEventQuery
+from app.server_runtime.query_client import HttpSnapshotMarketEventQuery
 from app.server_runtime.replay_lease import (
     ReplaySessionLeaseFencedError,
     ReplaySessionLeaseStore,
@@ -25,16 +25,28 @@ from app.server_runtime.replay_session import (
 from app.server_runtime.replay_snapshot import ReplayServerSnapshotPin
 from app.server_runtime.replay_worker import ReplayWorker
 from app.server_runtime.replay_worker_settings import ReplayWorkerSettings
-from app.server_runtime.testing.frozen_agg_trade_query import FrozenAggTradeQuery
 
 QueryFactory = Callable[[Mapping[str, object]], MarketEventQuery]
 
 
-def frozen_query_from_payload(payload: Mapping[str, object]) -> MarketEventQuery:
-    path = payload.get("query_path")
-    if not isinstance(path, str) or not path.strip():
-        raise ValueError("scheduler payload query_path is required")
-    return FrozenAggTradeQuery(Path(path))
+def server_query_from_payload(
+    settings: ReplayWorkerSettings,
+    payload: Mapping[str, object],
+) -> MarketEventQuery:
+    organization_id = str(payload.get("organization_id") or "")
+    workspace_id = str(payload.get("workspace_id") or "")
+    if (
+        organization_id != settings.organization_id
+        or workspace_id != settings.workspace_id
+    ):
+        raise ValueError("scheduler payload is outside the Worker query scope")
+    return HttpSnapshotMarketEventQuery(
+        base_url=settings.query_url,
+        bearer_token=settings.query_credential,
+        organization_id=settings.organization_id,
+        workspace_id=settings.workspace_id,
+        request_timeout_ms=settings.query_request_timeout_ms,
+    )
 
 
 def spec_from_assignment(
@@ -88,16 +100,14 @@ class ReplayWorkerPoolLoop:
         lease_store: ReplaySessionLeaseStore,
         session_store: ServerReplaySessionStore,
         query_factory: QueryFactory | None = None,
-        organization_id: str = "org-alpha",
-        workspace_id: str = "ws-research",
     ) -> None:
         self._settings = settings
         self._scheduler = scheduler
         self._lease_store = lease_store
         self._session_store = session_store
-        self._query_factory = query_factory or frozen_query_from_payload
-        self._organization_id = organization_id
-        self._workspace_id = workspace_id
+        self._query_factory = query_factory or (
+            lambda payload: server_query_from_payload(settings, payload)
+        )
         self._worker: ReplayWorker | None = None
         self._assignment: ReplaySchedulerAssignment | None = None
         self._stop = asyncio.Event()
@@ -151,7 +161,11 @@ class ReplayWorkerPoolLoop:
                 del _drop_error
 
     async def _try_claim(self) -> None:
-        assignment = await self._scheduler.claim(self._settings.worker_id)
+        assignment = await self._scheduler.claim(
+            self._settings.worker_id,
+            organization_id=self._settings.organization_id,
+            workspace_id=self._settings.workspace_id,
+        )
         if assignment is None:
             return
         self._assignment = assignment
@@ -227,6 +241,6 @@ class ReplayWorkerPoolLoop:
 
 __all__ = [
     "ReplayWorkerPoolLoop",
-    "frozen_query_from_payload",
+    "server_query_from_payload",
     "spec_from_assignment",
 ]

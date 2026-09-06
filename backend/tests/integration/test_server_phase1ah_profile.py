@@ -48,6 +48,7 @@ from app.server_runtime.storage.postgres_replay_scheduler import (
 from app.server_runtime.storage.postgres_replay_session import (
     PostgresReplaySessionStore,
 )
+from app.server_runtime.testing import FrozenAggTradeQuery
 from httpx import ASGITransport, AsyncClient
 from psycopg import sql
 
@@ -67,7 +68,8 @@ WORKER_A_BIND = "127.0.0.1:18321"
 WORKER_B_BIND = "127.0.0.1:18322"
 CONTROL_A = "phase1ah-control-token-aaaa"
 CONTROL_B = "phase1ah-control-token-bbbb"
-QUERY_CREDENTIAL = "phase1ah-query-credential"
+QUERY_CREDENTIAL = "phase1ah-query-credential-0000000000"
+QUERY_URL = "http://127.0.0.1:18310"
 SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
 WORKER_SCRIPT = SCRIPTS / "server_replay_worker.py"
 PYTHON = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python"
@@ -89,7 +91,7 @@ async def _run(tmp_path: Path) -> None:
     await _prepare_database()
     query_path = tmp_path / "frozen-query.json"
     _write_frozen_query(query_path)
-    health = await _start_role_health()
+    health = await _start_role_health(query_path)
     worker_a = await _start_pool_worker(
         worker_id="worker-a", bind=WORKER_A_BIND, token=CONTROL_A
     )
@@ -132,11 +134,14 @@ async def _run(tmp_path: Path) -> None:
             assert live["production_ready"] is False
             created = await client.post(
                 "/api/v1/replay/runs",
-                json=_payload(query_path),
+                json=_payload(),
                 headers=headers,
             )
             assert created.status_code == 200
             run_id = created.json()["run_id"]
+            listed = await client.get("/api/v1/replay/runs", headers=headers)
+            assert listed.status_code == 200
+            assert [item["run_id"] for item in listed.json()["runs"]] == [run_id]
             session_id = await _wait_running(client, run_id)
             acquired = await client.post(
                 f"/api/v1/replay/runs/session/{session_id}/commands",
@@ -314,7 +319,7 @@ def _write_frozen_query(path: Path) -> None:
     )
 
 
-def _payload(query_path: Path) -> dict[str, object]:
+def _payload() -> dict[str, object]:
     config = ReplaySessionConfig(
         protocol=REPLAY_PROTOCOL,
         source_kind=SourceKind.AGG_TRADE,
@@ -368,7 +373,6 @@ def _payload(query_path: Path) -> dict[str, object]:
     return {
         "idempotency_key": "int-1ah",
         "source_kind": "agg_trade",
-        "query_path": str(query_path),
         "organization_id": "org-alpha",
         "workspace_id": "ws-research",
         "snapshot": {
@@ -432,27 +436,89 @@ def _composition_env() -> dict[str, str]:
         "CANDLESCOPE_SERVER_QUERY_S3_BUCKET": "candlescope-archive",
         "CANDLESCOPE_SERVER_QUERY_S3_ACCESS_KEY_ID": "candlescope",
         "CANDLESCOPE_SERVER_QUERY_S3_SECRET_ACCESS_KEY": "phase1ah-local-secret",
-        "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": "a" * 32,
+        "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": QUERY_CREDENTIAL,
+        "CANDLESCOPE_SERVER_QUERY_AUTH_ORGANIZATION_ID": "org-alpha",
+        "CANDLESCOPE_SERVER_QUERY_AUTH_WORKSPACE_ID": "ws-research",
         "CANDLESCOPE_SERVER_QUERY_CONTROL_BEARER_TOKEN": "b" * 32,
         "CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN": ADMIN_DSN,
         "CANDLESCOPE_SERVER_QUERY_INSTANCE_ID": "query-a",
+        "CANDLESCOPE_SERVER_QUERY_BIND_HOST": "127.0.0.1",
+        "CANDLESCOPE_SERVER_QUERY_BIND_PORT": "18310",
         "CANDLESCOPE_SERVER_COLLECTOR_HEALTH_BIND": "127.0.0.1:18311",
         "CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_HEALTH_BIND": "127.0.0.1:18312",
         "CANDLESCOPE_SERVER_ARCHIVE_WRITER_HEALTH_BIND": "127.0.0.1:18313",
     }
 
 
-async def _start_role_health() -> web.AppRunner:
+async def _start_role_health(query_path: Path) -> web.AppRunner:
     app = web.Application()
+    frozen_query = FrozenAggTradeQuery(query_path)
 
     async def ready(_request: web.Request) -> web.Response:
         return web.json_response({"status": "ready", "ready": True})
 
+    async def query(request: web.Request) -> web.Response:
+        if request.headers.get("Authorization") != f"Bearer {QUERY_CREDENTIAL}":
+            raise web.HTTPUnauthorized()
+        body = await request.json()
+        assert body["organization_id"] == "org-alpha"
+        assert body["workspace_id"] == "ws-research"
+        assert body["preference"] == "cold"
+        from app.data_engine.market_data import MarketStreamKey
+        from app.server_contracts import MarketDataSnapshotRef, MarketEventCursor
+
+        snapshot = MarketDataSnapshotRef(**body["snapshot"])
+        stream = MarketStreamKey.build(**body["stream"])
+        cursor = None if body["cursor"] is None else MarketEventCursor(**body["cursor"])
+        page = await frozen_query.query(
+            snapshot=snapshot,
+            stream=stream,
+            start_event_time_ms=body["start_event_time_ms"],
+            end_event_time_ms=body["end_event_time_ms"],
+            limit=body["limit"],
+            cursor=cursor,
+        )
+        covered = page.covered_range
+        return web.json_response(
+            {
+                "backend": "cold",
+                "hot_committed_next_offset": None,
+                "parity_verified": False,
+                "hot_quarantined": False,
+                "page": {
+                    "snapshot": {
+                        "data_epoch": page.snapshot.data_epoch,
+                        "snapshot_version": page.snapshot.snapshot_version,
+                        "manifest_uri": page.snapshot.manifest_uri,
+                        "manifest_sha256": page.snapshot.manifest_sha256,
+                    },
+                    "events": [event.to_wire() for event in page.events],
+                    "covered_range": {
+                        "partition_key": covered.partition_key,
+                        "start_event_time_ms": covered.start_event_time_ms,
+                        "end_event_time_ms": covered.end_event_time_ms,
+                        "event_count": covered.event_count,
+                        "sequence_start": covered.sequence_start,
+                        "sequence_end": covered.sequence_end,
+                    },
+                    "next_cursor": (
+                        None
+                        if page.next_cursor is None
+                        else {
+                            "value": page.next_cursor.value,
+                            "manifest_sha256": page.next_cursor.manifest_sha256,
+                        }
+                    ),
+                },
+            }
+        )
+
     app.router.add_get("/health/ready", ready)
     app.router.add_get("/health", ready)
+    app.router.add_post("/api/v1/server/market-events/query", query)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
-    for port in (18311, 18312, 18313):
+    for port in (18310, 18311, 18312, 18313):
         await web.TCPSite(runner, "127.0.0.1", port).start()
     return runner
 
@@ -467,6 +533,9 @@ async def _start_pool_worker(
             "CANDLESCOPE_SERVER_REPLAY_WORKER_WORKER_ID": worker_id,
             "CANDLESCOPE_SERVER_REPLAY_WORKER_POSTGRES_DSN": RUNTIME_DSN,
             "CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_CREDENTIAL": QUERY_CREDENTIAL,
+            "CANDLESCOPE_SERVER_REPLAY_WORKER_ORGANIZATION_ID": "org-alpha",
+            "CANDLESCOPE_SERVER_REPLAY_WORKER_WORKSPACE_ID": "ws-research",
+            "CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_URL": QUERY_URL,
             "CANDLESCOPE_SERVER_REPLAY_WORKER_CONTROL_TOKEN": token,
             "CANDLESCOPE_SERVER_REPLAY_WORKER_LEASE_TTL_MS": "3000",
             "CANDLESCOPE_SERVER_REPLAY_WORKER_RENEW_INTERVAL_MS": "1000",

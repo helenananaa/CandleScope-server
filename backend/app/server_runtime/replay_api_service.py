@@ -88,25 +88,42 @@ class ServerReplayApiService:
         self, payload: Mapping[str, object], *, principal: ServerPrincipal
     ) -> dict[str, object]:
         require_write(principal)
+        if "query_path" in payload:
+            raise ReplayDomainError(
+                ReplayErrorCode.INVALID_STATE_TRANSITION,
+                "server replay requests cannot select a local query path",
+            )
         organization_id = str(
             payload.get("organization_id") or principal.organization_id
         )
         workspace_id = str(payload.get("workspace_id") or principal.workspace_id)
         require_scope(principal, organization_id, workspace_id)
+        scheduler_payload = dict(payload)
+        # This payload crosses into independently deployed Workers. Persist the
+        # verified identity scope even when the caller omitted it.
+        scheduler_payload["organization_id"] = principal.organization_id
+        scheduler_payload["workspace_id"] = principal.workspace_id
         request = await self._scheduler.create_request(
             organization_id=organization_id,
             workspace_id=workspace_id,
             idempotency_key=str(
                 payload.get("idempotency_key") or payload.get("client_key") or "default"
             ),
-            payload=dict(payload),
+            payload=scheduler_payload,
             priority=int(payload.get("priority") or 0),
         )
         return _request_payload(request)
 
     async def list_runs(self, *, principal: ServerPrincipal) -> dict[str, object]:
         require_read(principal)
-        return {"protocol": "replay.v1", "runs": []}
+        requests = await self._scheduler.list_requests(
+            organization_id=principal.organization_id,
+            workspace_id=principal.workspace_id,
+        )
+        return {
+            "protocol": "replay.v1",
+            "runs": [_request_payload(request) for request in requests],
+        }
 
     async def get_run(
         self, run_id: str, *, principal: ServerPrincipal
@@ -198,8 +215,14 @@ class ServerReplayApiService:
         self, run_id: str, *, principal: ServerPrincipal
     ) -> dict[str, object]:
         require_write(principal)
-        request = await self._scheduler.cancel(run_id)
+        request = await self._scheduler.get_request(run_id)
+        if request is None:
+            raise ReplayDomainError(
+                ReplayErrorCode.SESSION_NOT_FOUND,
+                "replay run does not exist",
+            )
         require_scope(principal, request.organization_id, request.workspace_id)
+        request = await self._scheduler.cancel(run_id)
         return _request_payload(request)
 
     def endpoint_inventory(self) -> dict[str, str]:

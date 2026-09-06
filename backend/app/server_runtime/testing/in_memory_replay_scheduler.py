@@ -53,6 +53,26 @@ class InMemoryReplaySchedulerStore:
         self._require_available()
         return self._requests.get(request_id)
 
+    async def list_requests(
+        self,
+        organization_id: str,
+        workspace_id: str,
+        *,
+        limit: int,
+    ) -> tuple[ReplaySchedulerRequest, ...]:
+        self._require_available()
+        matching = [
+            request
+            for request in self._requests.values()
+            if request.organization_id == organization_id
+            and request.workspace_id == workspace_id
+        ]
+        matching.sort(
+            key=lambda request: (request.created_at_ms, request.request_id),
+            reverse=True,
+        )
+        return tuple(matching[:limit])
+
     async def count_open(self, organization_id: str) -> tuple[int, int]:
         self._require_available()
         pending = 0
@@ -83,7 +103,12 @@ class InMemoryReplaySchedulerStore:
             }
 
     async def claim_next(
-        self, worker_id: str, *, now_ms: int
+        self,
+        worker_id: str,
+        *,
+        now_ms: int,
+        organization_id: str | None,
+        workspace_id: str | None,
     ) -> ReplaySchedulerAssignment | None:
         self._require_available()
         async with self._lock:
@@ -95,6 +120,11 @@ class InMemoryReplaySchedulerStore:
                 return None
             candidates = []
             for request in self._requests.values():
+                if organization_id is not None and (
+                    request.organization_id != organization_id
+                    or request.workspace_id != workspace_id
+                ):
+                    continue
                 if request.state is ReplayRequestState.PENDING:
                     candidates.append(request)
                     continue
@@ -201,18 +231,14 @@ class InMemoryReplaySchedulerStore:
                 expired += 1
         return expired
 
-    async def get_by_session(
-        self, session_id: str
-    ) -> ReplaySchedulerRequest | None:
+    async def get_by_session(self, session_id: str) -> ReplaySchedulerRequest | None:
         self._require_available()
         for request in self._requests.values():
             if request.session_id == session_id:
                 return request
         return None
 
-    async def get_assignment(
-        self, session_id: str
-    ) -> ReplaySchedulerAssignment | None:
+    async def get_assignment(self, session_id: str) -> ReplaySchedulerAssignment | None:
         self._require_available()
         for assignment in self._assignments.values():
             if assignment.session_id == session_id:
@@ -229,9 +255,7 @@ class InMemoryReplaySchedulerStore:
             return
         queued.append(dict(payload))
 
-    async def list_commands(
-        self, session_id: str
-    ) -> tuple[Mapping[str, object], ...]:
+    async def list_commands(self, session_id: str) -> tuple[Mapping[str, object], ...]:
         self._require_available()
         return tuple(self._commands.get(session_id, ()))
 
@@ -250,9 +274,7 @@ class InMemoryReplaySchedulerStore:
             current = self._assignments.get(assignment.assignment_id)
             if current is None or current.active is False:
                 return
-            self._assignments[assignment.assignment_id] = replace(
-                current, active=False
-            )
+            self._assignments[assignment.assignment_id] = replace(current, active=False)
             worker = self._workers.get(assignment.worker_id)
             if worker is not None:
                 worker["active_sessions"] = max(0, worker["active_sessions"] - 1)

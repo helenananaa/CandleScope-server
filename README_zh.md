@@ -35,18 +35,20 @@ Vite 和 Lightweight Charts 代码基线。CandleScope 当前支持 Binance 与 
 ## 服务器状态
 
 本仓库是 CandleScope 服务器 Profile 的公开开发线，当前实现和验证证据推进到
-**Phase 1AC**。
+**Phase 1AH**。
 
 | 范围 | 当前边界 |
 |---|---|
 | Personal Profile | 继续使用 SQLite、进程内总线和本地文件，可按下方快速开始运行。 |
 | Server 数据平面 | 已有 durable event publish、ClickHouse projection、不可变 Parquet archive、冷快照查询、健康对账和组合检查合同与门禁。 |
-| Server 身份与回放 | 已实现组织/工作区绑定的查询身份、PostgreSQL 回放会话租约、fencing，以及租约保护的冷快照加载。 |
-| 生产就绪 | 尚未声称。`CANDLESCOPE_PROFILE=server` 仍然 fail closed；Replay Worker 池、调度器、HTTP replay API 和公网 24 小时连续性证明尚未完成。 |
+| Server 身份与回放 | 已实现组织/工作区绑定的身份、PostgreSQL 租约与 fencing、持久化调度器、带认证的冷查询 Replay Worker 池，以及 HTTP/WS replay facade。 |
+| Server Profile | `CANDLESCOPE_PROFILE=server` 已有独立组合根和本地 Compose 接管门禁；不会保留 personal SQLite/settings/debug 路由，也不会回退 personal 数据源。 |
+| 生产就绪 | 尚未声称。完整角色全链集成与公网 Binance 24 小时连续性/故障注入证据仍未完成，`production_ready` 保持 `false`。 |
 
 建议先阅读[服务器产品合同](docs/server/CANDLESCOPE_SERVER_PRODUCT_CONTRACT_zh.md)、
-[服务器架构](docs/server/CANDLESCOPE_SERVER_ARCHITECTURE_zh.md)和
-[Phase 1AC 执行记录](docs/server/CANDLESCOPE_SERVER_PHASE1AC_EXECUTION_zh.md)。
+[服务器架构](docs/server/CANDLESCOPE_SERVER_ARCHITECTURE_zh.md)、
+[Phase 1AH 执行记录](docs/server/CANDLESCOPE_SERVER_PHASE1AH_EXECUTION_zh.md)和
+[Phase 1AD–1AI 执行计划](docs/server/CANDLESCOPE_SERVER_PHASE1AD_TO_1AI_EXECUTION_zh.md)。
 机器可读的阶段证据位于 [`docs/server/evidence`](docs/server/evidence)。
 
 克隆服务器仓库：
@@ -57,8 +59,8 @@ git clone https://github.com/helenananaa/CandleScope-server.git
 
 ## 快速开始
 
-> 本节命令启动的是可运行的 **personal Profile**，不会解锁 server Profile，
-> 也不会替代服务器外部基础设施门禁。
+> 本节命令启动的是可运行的 **personal Profile**，不会配置 Server Profile 所需的外部
+> 基础设施，也不能替代服务器集成或生产门禁。
 
 环境要求：
 

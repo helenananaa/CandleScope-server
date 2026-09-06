@@ -9,6 +9,7 @@ from app.deployment import load_deployment_settings
 from app.server_runtime.replay_scheduler import (
     ReplayRequestState,
     ReplayScheduler,
+    ReplaySchedulerError,
     ReplaySchedulerIdempotencyError,
     ReplaySchedulerQuotaError,
 )
@@ -174,6 +175,48 @@ def test_capacity_priority_aging_timeout_and_unavailable() -> None:
                 idempotency_key="down",
                 payload=_payload("down"),
             )
+
+    asyncio.run(run())
+
+
+def test_worker_claim_is_scoped_to_its_query_credential() -> None:
+    async def run() -> None:
+        now = [5_000]
+        store = InMemoryReplaySchedulerStore(clock_ms=lambda: now[0])
+        scheduler = ReplayScheduler(
+            store,
+            max_pending_per_org=8,
+            max_active_per_org=8,
+            clock_ms=lambda: now[0],
+        )
+        beta = await scheduler.create_request(
+            organization_id="org-beta",
+            workspace_id="ws-research",
+            idempotency_key="beta",
+            payload=_payload("beta"),
+            priority=100,
+        )
+        alpha = await scheduler.create_request(
+            organization_id="org-alpha",
+            workspace_id="ws-research",
+            idempotency_key="alpha",
+            payload=_payload("alpha"),
+        )
+        await scheduler.heartbeat("worker-alpha", capacity=1)
+        claimed = await scheduler.claim(
+            "worker-alpha",
+            organization_id="org-alpha",
+            workspace_id="ws-research",
+        )
+        assert claimed is not None
+        assert claimed.request_id == alpha.request_id
+        assert (
+            await store.get_request(beta.request_id)
+        ).state is ReplayRequestState.PENDING
+
+        with pytest.raises(ReplaySchedulerError) as scope_exc:
+            await scheduler.claim("worker-alpha", organization_id="org-alpha")
+        assert scope_exc.value.code == "SCHEDULER_INVALID_WORKER_SCOPE"
 
     asyncio.run(run())
 

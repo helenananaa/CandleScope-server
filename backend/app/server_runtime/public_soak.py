@@ -554,7 +554,11 @@ async def execute_public_soak(
             spec.name: _role_child_env(spec.name, environ, manifest)
             for spec in specs
         }
-        await manager.start_in_order(specs, environments)
+        data_plane = [spec for spec in specs if spec.name != "api"]
+        api_specs = [spec for spec in specs if spec.name == "api"]
+        await manager.start_in_order(data_plane, environments)
+        await _wait_archive_caught_up(manifest, timeout_ms=120_000)
+        await manager.start_in_order(api_specs, environments)
         actuator = ProcessFaultActuator(manager, specs, environ, manifest)
         faults = SoakFaultMachine(
             manifest,
@@ -704,6 +708,39 @@ def build_role_specs(
 
 def repo_root_from_manifest(manifest: PublicSoakManifest) -> Path:
     return Path(manifest.infrastructure.compose_file).resolve().parents[2]
+
+
+async def _wait_archive_caught_up(
+    manifest: PublicSoakManifest,
+    *,
+    timeout_ms: int,
+) -> None:
+    import time
+
+    import aiohttp
+
+    deadline = time.time_ns() // 1_000_000 + timeout_ms
+    async with aiohttp.ClientSession(
+        timeout=aiohttp.ClientTimeout(total=2),
+        trust_env=False,
+    ) as session:
+        while time.time_ns() // 1_000_000 < deadline:
+            bodies, _sizes = await _scrape_roles(session, manifest.health_endpoints)
+            writer = bodies.get("writer") or {}
+            archive = bodies.get("archiver") or {}
+            writer_next = writer.get("committed_next_offset")
+            archive_next = archive.get("committed_next_offset")
+            if (
+                isinstance(writer_next, int)
+                and isinstance(archive_next, int)
+                and archive_next >= max(0, writer_next - 20)
+            ):
+                return
+            await asyncio.sleep(0.5)
+    raise SoakObservationError(
+        "ARCHIVE_CATCHUP_TIMEOUT",
+        "archiver did not catch up before API start",
+    )
 
 
 def _bind(health_url: str) -> str:

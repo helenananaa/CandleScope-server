@@ -118,9 +118,12 @@ class HttpSnapshotMarketEventQuery:
             "workspace_id": self._workspace_id,
         }
         timeout = aiohttp.ClientTimeout(total=self._request_timeout_ms / 1_000)
+        session_kwargs: dict[str, Any] = {"timeout": timeout}
+        if self._session_factory is aiohttp.ClientSession:
+            session_kwargs["trust_env"] = False
         try:
             async with (
-                self._session_factory(timeout=timeout) as session,
+                self._session_factory(**session_kwargs) as session,
                 session.post(
                     self._endpoint,
                     json=body,

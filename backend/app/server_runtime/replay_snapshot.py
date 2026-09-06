@@ -265,7 +265,8 @@ class ServerSnapshotTradeReader:
             except Exception as exc:
                 raise ServerSnapshotReplayError(
                     ReplayErrorCode.ARCHIVE_DEGRADED,
-                    "cold snapshot query failed while loading replay trades",
+                    "cold snapshot query failed while loading replay trades: "
+                    f"{type(exc).__name__}: {exc}",
                 ) from exc
             _require_page_snapshot(page.snapshot, pin.snapshot)
             if not page.events and page.next_cursor is not None:

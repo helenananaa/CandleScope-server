@@ -335,7 +335,7 @@ class PublicSoakReplayDriver:
         )
 
     async def _wait_active(
-        self, task: ReplayTask, *, attempts: int = 300
+        self, task: ReplayTask, *, attempts: int = 450
     ) -> ReplayTask:
         current = task
         for _ in range(attempts):

@@ -15,6 +15,7 @@ from app.server_runtime.replay_lease import (
     ReplaySessionLeaseStore,
 )
 from app.server_runtime.replay_scheduler import (
+    ReplayRequestState,
     ReplayScheduler,
     ReplaySchedulerAssignment,
 )
@@ -120,6 +121,8 @@ class ReplayWorkerPoolLoop:
                 await self._scheduler.heartbeat(self._settings.worker_id, capacity=1)
                 if self._assignment is None:
                     await self._try_claim()
+                elif await self._assignment_released():
+                    await self._abandon_claim()
                 else:
                     await self._drain_commands()
             except ReplaySessionLeaseFencedError:
@@ -159,6 +162,20 @@ class ReplayWorkerPoolLoop:
             except Exception as exc:  # noqa: BLE001
                 _drop_error = type(exc).__name__
                 del _drop_error
+
+    async def _assignment_released(self) -> bool:
+        assignment = self._assignment
+        if assignment is None:
+            return False
+        request = await self._scheduler.get_request(assignment.request_id)
+        if request is None:
+            return True
+        return request.state in {
+            ReplayRequestState.CANCELLING,
+            ReplayRequestState.CANCELLED,
+            ReplayRequestState.FAILED,
+            ReplayRequestState.COMPLETED,
+        }
 
     async def _try_claim(self) -> None:
         assignment = await self._scheduler.claim(

@@ -850,6 +850,24 @@ class _FakeReplayTransport:
     async def get_run(self, run_id: str) -> dict[str, object]:
         return self.runs[run_id]
 
+    async def get_session(self, session_id: str) -> dict[str, object]:
+        for body in self.runs.values():
+            if body.get("session_id") == session_id:
+                return {
+                    "session_id": session_id,
+                    "run_id": body["run_id"],
+                    "state": body["state"],
+                    "attempt": 1,
+                }
+        return {"session_id": session_id, "state": "PENDING", "attempt": 0}
+
+    async def cancel_run(self, run_id: str) -> dict[str, object]:
+        body = self.runs[run_id]
+        body["state"] = "CANCELLED"
+        if self._active > 0 and body.get("session_id"):
+            self._active -= 1
+        return body
+
     async def submit_command(
         self, session_id: str, command: dict[str, object]
     ) -> dict[str, object]:
@@ -879,6 +897,78 @@ class _FakeReplayTransport:
 
     def durable_command_count(self, command_id: str) -> int:
         return int(self.durable_counts.get(command_id, 0))
+
+
+def test_replay_worker_role_from_id() -> None:
+    from app.server_runtime.public_soak_replay import worker_role_from_id
+
+    assert worker_role_from_id("worker-a") == "worker_a"
+    assert worker_role_from_id("worker-b") == "worker_b"
+    assert worker_role_from_id("worker_b") == "worker_b"
+
+
+def test_replay_health_origin() -> None:
+    from app.server_runtime.public_soak_replay import health_origin
+
+    assert (
+        health_origin("http://127.0.0.1:18128/health/ready") == "http://127.0.0.1:18128"
+    )
+
+
+def test_api_bearer_token_falls_back_to_static_identity() -> None:
+    from app.server_runtime.public_soak import _api_bearer_token
+
+    assert _api_bearer_token({"CANDLESCOPE_PHASE1AI_API_TOKEN": "from-env"}) == (
+        "from-env"
+    )
+    assert (
+        _api_bearer_token(
+            {
+                "CANDLESCOPE_SERVER_API_STATIC_TOKENS_JSON": (
+                    '{"phase1ai-local-api-token-00000000000000":{"role":"trader"}}'
+                )
+            }
+        )
+        == "phase1ai-local-api-token-00000000000000"
+    )
+
+
+def test_replay_http_transport_repr_hides_tokens() -> None:
+    from app.server_runtime.public_soak_replay import HttpSoakReplayTransport
+
+    transport = HttpSoakReplayTransport(
+        api_origin="http://127.0.0.1:18128",
+        query_origin="http://127.0.0.1:18124",
+        api_token="super-secret-api-token",
+        query_token="super-secret-query-token",
+        organization_id="org-phase1ai",
+        workspace_id="ws-phase1ai",
+        session=object(),
+    )
+    text = repr(transport)
+    assert "super-secret" not in text
+    assert "18128" in text
+
+
+def test_replay_pin_from_query_events() -> None:
+    from app.server_runtime.public_soak_replay import pin_from_query_events
+
+    pin = pin_from_query_events(
+        _pin_payload()["snapshot"],
+        [
+            {
+                "event_time_ms": 1_700_000_000_042,
+                "payload": {"agg_trade_id": 42},
+            },
+            {
+                "event_time_ms": 1_700_000_000_044,
+                "payload": {"agg_trade_id": 44},
+            },
+        ],
+    )
+    assert pin.expected_first_agg_trade_id == 42
+    assert pin.expected_last_agg_trade_id == 44
+    assert pin.row_count == 3
 
 
 def test_replay_rejects_latest_and_query_path() -> None:
@@ -931,6 +1021,8 @@ def test_replay_create_preconditions_and_three_tasks(tmp_path: Path) -> None:
             assert payload["organization_id"] == manifest.organization_id
             assert payload["workspace_id"] == manifest.workspace_id
             assert payload["snapshot"]["snapshot_version"] == 4
+            assert "config" in payload
+            assert "broker_config" in payload
 
     asyncio.run(run())
 
@@ -948,6 +1040,7 @@ def test_replay_commands_and_command_id_idempotency(tmp_path: Path) -> None:
         driver = PublicSoakReplayDriver(manifest, transport)
         workload = await driver.create_three_tasks(parse_snapshot_pin(_pin_payload()))
         observed = await driver.drive_commands(workload)
+        assert observed["replay-a-acquire"].command_id.endswith("-acquire")
         assert observed["replay-a-step"].revision == 1
         assert observed["replay-b-resume"].command_id.endswith("-resume")
         assert transport.runs["replay-queued"]["state"] == "PENDING"

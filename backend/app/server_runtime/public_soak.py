@@ -536,6 +536,8 @@ async def execute_public_soak(
     error_code = None
     error_message = None
     phase_passed = False
+    replay_extra: dict[str, object] = {}
+    takeover_observed = False
     try:
         _compose_up(manifest, environ)
         await _run_inits(
@@ -567,9 +569,21 @@ async def execute_public_soak(
             hook_dir=manifest.output.log_dir,
         )
         async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=2),
+            timeout=aiohttp.ClientTimeout(total=30),
             trust_env=False,
         ) as session:
+            workload = await _start_replay_workload(
+                manifest, environ, session, actuator, manager
+            )
+            replay_extra = {
+                "replay_a": workload.replay_a.run_id,
+                "replay_b": workload.replay_b.run_id,
+                "replay_queued": workload.replay_queued.run_id,
+                "replay_queued_observed": workload.replay_queued.observed_queued,
+                "replay_a_session": workload.replay_a.session_id,
+                "replay_a_owner": actuator.owner_worker_id,
+                "kill_role": actuator.kill_role_override,
+            }
             while clock() - started_at_ms < manifest.duration_ms:
                 bodies, raw_sizes = await _scrape_roles(
                     session, manifest.health_endpoints
@@ -586,6 +600,12 @@ async def execute_public_soak(
                 writer.append_sample(sampler.records[-1], fsync=False)
                 await faults.run_due(started_at_ms=started_at_ms)
                 await asyncio.sleep(manifest.scrape_interval_ms / 1000)
+        takeover_observed = actuator.takeover_observed
+        if not takeover_observed:
+            raise SoakObservationError(
+                "WORKER_TAKEOVER_NOT_OBSERVED",
+                "Worker SIGKILL did not transfer the live Actor to the sibling",
+            )
         phase_passed = True
     except Exception as exc:  # noqa: BLE001
         error_code = getattr(exc, "code", type(exc).__name__)
@@ -613,6 +633,8 @@ async def execute_public_soak(
         extra={
             "events": manager.events[-32:],
             "roles": [role.to_evidence() for role in manager.roles.values()],
+            "replay": replay_extra,
+            "worker_takeover_observed": takeover_observed,
         },
     )
 
@@ -715,6 +737,188 @@ def _fault_evidence(machine) -> dict[str, object]:
 
 def repo_root_from_manifest(manifest: PublicSoakManifest) -> Path:
     return Path(manifest.infrastructure.compose_file).resolve().parents[2]
+
+
+async def _start_replay_workload(
+    manifest: PublicSoakManifest,
+    environ: Mapping[str, str],
+    session,
+    actuator: ProcessFaultActuator,
+    manager,
+):
+    from app.server_runtime.public_soak_replay import (
+        FROZEN_IDEMPOTENT_COMMAND_ID,
+        HttpSoakReplayTransport,
+        PublicSoakReplayDriver,
+        assignment_worker_id,
+        durable_command_count_from_store,
+        health_origin,
+        pin_from_query_events,
+        worker_role_from_id,
+    )
+
+    pin = await _wait_snapshot_pin(manifest, session)
+    api_token = _api_bearer_token(environ)
+    query_token = environ.get("CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN") or ""
+    transport = HttpSoakReplayTransport(
+        api_origin=health_origin(manifest.health_endpoints["api"]),
+        query_origin=health_origin(manifest.health_endpoints["query"]),
+        api_token=api_token,
+        query_token=query_token,
+        organization_id=manifest.organization_id,
+        workspace_id=manifest.workspace_id,
+        session=session,
+    )
+    driver = PublicSoakReplayDriver(manifest, transport, sleep=asyncio.sleep)
+    queried = await transport.cold_query_snapshot(pin.to_payload()["snapshot"])
+    events = queried.get("events")
+    if not isinstance(events, list) or not events:
+        raise SoakObservationError(
+            "QUERY_NOT_COLD",
+            "cold Query returned no events for the pinned snapshot",
+        )
+    typed_events = [item for item in events if isinstance(item, Mapping)]
+    pin = pin_from_query_events(pin.to_payload()["snapshot"], typed_events)
+    workload = await driver.create_three_tasks(pin)
+    commands = await driver.drive_commands(workload)
+    await driver.probe_idempotency(
+        workload,
+        expected_revision=commands["replay-b-resume"].revision,
+    )
+    if workload.replay_a.session_id is None:
+        raise SoakObservationError("SESSION_NOT_ASSIGNED", "replay-a has no session")
+    dsn = environ.get("CANDLESCOPE_SERVER_REPLAY_WORKER_POSTGRES_DSN") or ""
+    durable = await durable_command_count_from_store(dsn, FROZEN_IDEMPOTENT_COMMAND_ID)
+    if durable != 1:
+        raise SoakObservationError(
+            "COMMAND_NOT_IDEMPOTENT",
+            "PostgreSQL must contain exactly one durable command result",
+        )
+    owner = await assignment_worker_id(dsn, workload.replay_a.session_id)
+    if not owner:
+        raise SoakObservationError(
+            "WORKER_TAKEOVER_NOT_OBSERVED",
+            "could not resolve the Worker that owns replay-a",
+        )
+    kill_role = worker_role_from_id(owner)
+    actuator.kill_role_override = kill_role
+    actuator.owner_worker_id = owner
+    sibling = "worker_b" if kill_role == "worker_a" else "worker_a"
+    await transport.cancel_run(workload.replay_queued.run_id)
+    await transport.cancel_run(workload.replay_b.run_id)
+    await _wait_run_terminal(transport, workload.replay_queued.run_id)
+    await _wait_run_terminal(transport, workload.replay_b.run_id)
+    await _wait_worker_idle(session, manifest.health_endpoints[sibling])
+
+    async def _takeover() -> bool:
+        process = manager._live.get(kill_role)
+        dead = process is not None and process.returncode is not None
+        if not dead:
+            return False
+        sibling_proc = manager._live.get(sibling)
+        sibling_alive = sibling_proc is not None and sibling_proc.returncode is None
+        if not sibling_alive:
+            return False
+        try:
+            session_body = await transport.get_session(
+                workload.replay_a.session_id or ""
+            )
+        except Exception:  # noqa: BLE001
+            return False
+        running = str(session_body.get("state") or "") == "RUNNING"
+        attempt = int(session_body.get("attempt") or 0)
+        observed = dead and running and attempt >= 2 and sibling_alive
+        if observed:
+            actuator.takeover_observed = True
+        return observed
+
+    actuator.takeover_check = _takeover
+    return workload
+
+
+async def _wait_snapshot_pin(manifest: PublicSoakManifest, session):
+    import time
+
+    from app.server_runtime.public_soak_replay import parse_snapshot_pin
+
+    deadline = time.time_ns() // 1_000_000 + 120_000
+    while time.time_ns() // 1_000_000 < deadline:
+        bodies, _sizes = await _scrape_roles(session, manifest.health_endpoints)
+        archive = bodies.get("archiver") or {}
+        snapshot = archive.get("current_snapshot")
+        if (
+            isinstance(snapshot, Mapping)
+            and int(snapshot.get("snapshot_version") or 0) > 0
+        ):
+            start_ms = int(archive.get("updated_at_ms") or 0)
+            return parse_snapshot_pin(
+                {
+                    "snapshot": dict(snapshot),
+                    "pin": {
+                        "start_event_time_ms": max(0, start_ms - 60_000),
+                        "end_event_time_ms": start_ms + 60_000,
+                        "expected_first_agg_trade_id": 1,
+                        "expected_last_agg_trade_id": 2,
+                        "row_count": 2,
+                    },
+                }
+            )
+        await asyncio.sleep(0.5)
+    raise SoakObservationError(
+        "SNAPSHOT_MISSING",
+        "archiver did not publish an immutable snapshot",
+    )
+
+
+def _api_bearer_token(environ: Mapping[str, str]) -> str:
+    token = environ.get("CANDLESCOPE_PHASE1AI_API_TOKEN") or environ.get(
+        "CANDLESCOPE_SERVER_API_TOKEN", ""
+    )
+    if str(token).strip():
+        return str(token).strip()
+    raw = environ.get("CANDLESCOPE_SERVER_API_STATIC_TOKENS_JSON") or ""
+    if not str(raw).strip():
+        return ""
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return ""
+    if isinstance(payload, dict) and payload:
+        return str(next(iter(payload)))
+    return ""
+
+
+async def _wait_run_terminal(transport, run_id: str, *, attempts: int = 150) -> None:
+    current = ""
+    for _ in range(attempts):
+        body = await transport.get_run(run_id)
+        current = str(body.get("state") or "")
+        if current in {"CANCELLED", "FAILED", "COMPLETED"}:
+            return
+        await asyncio.sleep(0.2)
+    raise SoakObservationError(
+        "WORKER_TAKEOVER_NOT_OBSERVED",
+        f"{run_id} did not reach a terminal scheduler state",
+    )
+
+
+async def _wait_worker_idle(session, health_url: str, *, attempts: int = 150) -> None:
+    for _ in range(attempts):
+        try:
+            async with session.get(health_url) as response:
+                body = await response.json(content_type=None)
+        except Exception:  # noqa: BLE001
+            body = {}
+        if not isinstance(body, Mapping):
+            body = {}
+        actors = int(body.get("active_actors") or 0)
+        if actors == 0:
+            return
+        await asyncio.sleep(0.2)
+    raise SoakObservationError(
+        "WORKER_TAKEOVER_NOT_OBSERVED",
+        "sibling Worker did not release its Actor after cancel",
+    )
 
 
 async def _wait_archive_caught_up(
@@ -911,6 +1115,9 @@ def _role_child_env(
         "PYTHONPATH", str(Path(repo_root_from_manifest(manifest)) / "backend")
     )
     env["PYTHONUNBUFFERED"] = "1"
+    env.setdefault("CANDLESCOPE_SERVER_REPLAY_WORKER_LEASE_TTL_MS", "8000")
+    env.setdefault("CANDLESCOPE_SERVER_REPLAY_WORKER_RENEW_INTERVAL_MS", "2000")
+    env.setdefault("CANDLESCOPE_SERVER_REPLAY_SCHEDULER_HEARTBEAT_TTL_MS", "5000")
     env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_DATA_EPOCH"] = manifest.run_id
     env["CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_KAFKA_GROUP_ID"] = (
         f"{manifest.run_id}-writer"
@@ -956,6 +1163,10 @@ class ProcessFaultActuator:
         self._triggered: set[str] = set()
         self._restarted: set[str] = set()
         self.last_bodies: dict[str, dict[str, object]] = {}
+        self.kill_role_override: str | None = None
+        self.owner_worker_id: str | None = None
+        self.takeover_check = None
+        self.takeover_observed = False
 
     async def trigger(self, spec) -> None:
         from app.server_runtime.soak_faults import (
@@ -970,36 +1181,45 @@ class ProcessFaultActuator:
             )
             self._triggered.add(spec.fault_id)
             return
-        process = self._manager._live.get(spec.target_role)
+        role = self.kill_role_override or spec.target_role
+        process = self._manager._live.get(role)
         if process is None:
-            raise SoakObservationError("ROLE_NOT_STARTED", spec.target_role)
+            raise SoakObservationError("ROLE_NOT_STARTED", role)
         if spec.method.endswith("sigkill"):
             process.kill()
         else:
             process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except TimeoutError:
+            pass
         self._triggered.add(spec.fault_id)
 
     async def trigger_observed(self, spec) -> bool:
-        process = self._manager._live.get(spec.target_role)
+        role = self.kill_role_override or spec.target_role
+        process = self._manager._live.get(role)
         if spec.method.endswith("sigkill"):
             return process is not None and process.returncode is not None
         return spec.fault_id in self._triggered
 
     async def recovery_observed(self, spec) -> bool:
+        if spec.method.endswith("sigkill") and self.takeover_check is not None:
+            return await self.takeover_check()
         if not spec.method.endswith("sigkill"):
             return True
-        process = self._manager._live.get(spec.target_role)
+        role = self.kill_role_override or spec.target_role
+        process = self._manager._live.get(role)
         if process is not None and process.returncode is None:
             return True
-        if spec.target_role in self._restarted:
-            live = self._manager._live.get(spec.target_role)
+        if role in self._restarted:
+            live = self._manager._live.get(role)
             return live is not None and live.returncode is None
-        if spec.target_role in self._manager._live:
-            await self._manager._finalize(spec.target_role)
-        env = _role_child_env(spec.target_role, self._environ, self._manifest)
-        await self._manager.start_role(self._specs[spec.target_role], env)
-        self._restarted.add(spec.target_role)
-        live = self._manager._live.get(spec.target_role)
+        if role in self._manager._live:
+            await self._manager._finalize(role)
+        env = _role_child_env(role, self._environ, self._manifest)
+        await self._manager.start_role(self._specs[role], env)
+        self._restarted.add(role)
+        live = self._manager._live.get(role)
         return live is not None and live.returncode is None
 
     async def quiet_observation(self):

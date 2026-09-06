@@ -135,17 +135,19 @@ Live controller 在后续独立 smoke（未覆盖 8/9）中已能通过认证 AP
 
 ## 4. 合并前门禁（实现后一次）
 
-在 `b8754db1` 与两次已验证 smoke 之后实际运行：
+在 HEAD `ec72d7e2` 上实际运行（scratch 转录 `step9-*.log`）：
 
-- `pytest backend/tests/test_server_phase1ai_public_soak.py`：61 passed
-- `pytest backend/tests/integration/test_server_phase1ai_smoke.py`：1 skipped
+- `pytest -q backend/tests/test_server_phase1ai_public_soak.py`：61 passed
+- `pytest -q backend/tests/integration/test_server_phase1ai_smoke.py`：1 skipped
   （未设置 `CANDLESCOPE_PHASE1AI_SMOKE=1`；真实 CLI smoke 已在上一节执行）
-- `pytest backend/tests/test_server_phase1ah_profile.py`：9 passed
+- `pytest -q backend/tests/test_server_phase*.py`（38 个文件的 shell glob，不是只跑 1AH）：
+  338 passed, 4 warnings（FastAPI `on_event` deprecation）；0 failed。
+  无与 Phase 1AI 无关的失败，因此没有改无关测试。
 - `uvx ruff@0.16.2 check` 与 `format --check`：allowlist 通过
-- `docker compose --env-file deploy/server/phase1ai.env.example -f deploy/server/compose.phase1ai.yml config --quiet`：通过
+- `docker compose --env-file deploy/server/phase1ai.env.example -f deploy/server/compose.phase1ai.yml config --quiet`：exit 0
 - `git diff --check`：通过
 
-未把 `backend/tests/test_server_phase*.py` 全量回归当作 24 小时通过条件。
+该 glob 回归通过不是 24 小时连续性证明。
 
 ## 5. Step 10 预检（未启动正式 24h）
 

@@ -403,7 +403,11 @@ def build_run_payload(
     from app.replay.broker.models import BrokerConfig, BrokerLimits, InstrumentFilters
     from app.replay.models import FeeModel, ReplaySessionConfig, SlippageModel
 
-    horizon_ms = max(1, pin.end_event_time_ms - pin.start_event_time_ms)
+    replay_start_ms, replay_end_time_ms = aligned_replay_window(
+        pin.start_event_time_ms,
+        pin.end_event_time_ms,
+    )
+    horizon_ms = max(1, replay_end_time_ms - replay_start_ms + 1)
     config = ReplaySessionConfig(
         protocol=REPLAY_PROTOCOL,
         source_kind=SourceKind.AGG_TRADE,
@@ -413,7 +417,7 @@ def build_run_payload(
         base_interval="1m",
         display_interval="1m",
         start_policy="manual",  # type: ignore[arg-type]
-        requested_start_ms=pin.start_event_time_ms,
+        requested_start_ms=replay_start_ms,
         warmup_bars=0,
         horizon_ms=horizon_ms,
         random_seed=7,
@@ -464,8 +468,8 @@ def build_run_payload(
             "priority": priority,
             "protocol": REPLAY_PROTOCOL,
             "quality_mode": QualityMode.EXACT.value,
-            "replay_start_ms": pin.start_event_time_ms,
-            "replay_end_time_ms": pin.end_event_time_ms,
+            "replay_start_ms": replay_start_ms,
+            "replay_end_time_ms": replay_end_time_ms,
             "config": config.to_dict(),
             "broker_config": broker.to_dict(),
         }
@@ -523,6 +527,28 @@ def _optional_text(value: object) -> str | None:
 
 def new_command_id(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:12]}"
+
+
+def aligned_replay_window(
+    start_ms: int, end_ms: int, *, interval: str = "1m"
+) -> tuple[int, int]:
+    from app.data_engine.interval_policy import (
+        compute_bucket_end_ms,
+        compute_bucket_start_ms,
+        parse_interval_ms,
+    )
+
+    interval_ms = parse_interval_ms(interval) or 60_000
+    aligned_start = compute_bucket_start_ms(start_ms, interval_ms, interval=interval)
+    final_open = compute_bucket_start_ms(
+        max(end_ms, start_ms), interval_ms, interval=interval
+    )
+    aligned_end = compute_bucket_end_ms(final_open, interval_ms, interval=interval) - 1
+    if aligned_end < aligned_start:
+        aligned_end = (
+            compute_bucket_end_ms(aligned_start, interval_ms, interval=interval) - 1
+        )
+    return aligned_start, aligned_end
 
 
 def pin_from_query_events(
@@ -801,6 +827,7 @@ __all__ = [
     "SnapshotPin",
     "SoakReplayTransport",
     "SoakReplayWorkload",
+    "aligned_replay_window",
     "assignment_worker_id",
     "build_run_payload",
     "durable_command_count_from_store",

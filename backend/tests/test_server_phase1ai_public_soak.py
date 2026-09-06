@@ -975,6 +975,27 @@ def test_replay_pin_from_query_events() -> None:
     assert pin.row_count == 3
 
 
+def test_replay_payload_aligns_start_to_one_minute_bar(tmp_path: Path) -> None:
+    from app.server_runtime.public_soak_replay import (
+        build_run_payload,
+        parse_snapshot_pin,
+    )
+
+    pin = parse_snapshot_pin(_pin_payload())
+    payload = build_run_payload(
+        _parsed_manifest(tmp_path),
+        pin,
+        idempotency_key="replay-a",
+        priority=10,
+    )
+    assert payload["replay_start_ms"] % 60_000 == 0
+    assert payload["replay_end_time_ms"] == payload["replay_start_ms"] + 60_000 - 1
+    config = payload["config"]
+    assert isinstance(config, dict)
+    assert config["requested_start_ms"] == payload["replay_start_ms"]
+    assert config["horizon_ms"] == 60_000
+
+
 def test_replay_pin_uses_consecutive_prefix_only() -> None:
     from app.server_runtime.public_soak_replay import pin_from_query_events
 

@@ -218,28 +218,40 @@ class ReplayWorkerPoolLoop:
             workspace_id=str(payload.get("workspace_id") or request.workspace_id),
             lease_ttl_ms=self._settings.lease_ttl_ms,
         )
-        spec = spec_from_assignment(
-            lease=lease,
-            payload=payload,
-            shutdown_timeout_seconds=max(
-                0.2, self._settings.shutdown_timeout_ms / 1_000
-            ),
-        )
-        worker = ReplayWorker(
-            self._settings,
-            lease_store=self._lease_store,
-            session_store=self._session_store,
-            query=query,
-            verify_privileges=getattr(
-                self._session_store, "verify_runtime_privileges", None
-            ),
-        )
-        if assignment.attempt > 1:
-            await worker.recover(spec)
-        else:
-            await worker.start_new(spec)
-        await self._scheduler.mark_running(assignment.request_id)
-        self._worker = worker
+        try:
+            spec = spec_from_assignment(
+                lease=lease,
+                payload=payload,
+                shutdown_timeout_seconds=max(
+                    0.2, self._settings.shutdown_timeout_ms / 1_000
+                ),
+            )
+            worker = ReplayWorker(
+                self._settings,
+                lease_store=self._lease_store,
+                session_store=self._session_store,
+                query=query,
+                verify_privileges=getattr(
+                    self._session_store, "verify_runtime_privileges", None
+                ),
+            )
+            if assignment.attempt > 1:
+                await worker.recover(spec)
+            else:
+                await worker.start_new(spec)
+            await self._scheduler.mark_running(assignment.request_id)
+            self._worker = worker
+        except Exception:
+            try:
+                await self._lease_store.release(lease)
+            except Exception as release_exc:  # noqa: BLE001
+                print(
+                    "replay-worker-pool: lease release failed: "
+                    f"{type(release_exc).__name__}: {release_exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            raise
 
     async def _drain_commands(self) -> None:
         if self._worker is None or self._assignment is None:

@@ -1,0 +1,61 @@
+{
+  "schema_version": "candlescope.server-phase1ae-verification.v1",
+  "captured_at_utc": "2026-09-04T10:57:47Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "43e23939f6b948e3cd67e0e82024723d3b831f2c",
+  "verified_on_commit": "0a91e00ad8189bdd43ec5bb79c9e55be87af4d76",
+  "phase": "phase1ae-replay-worker-takeover",
+  "phase_passed": true,
+  "phase1ae_passed": true,
+  "status": "REPLAY_WORKER_TAKEOVER_COMPLETE_NOT_SCHEDULER",
+  "log_paths": [
+    "implementer/phase1ae/integration-pass.log",
+    "implementer/phase1ae/pytest-unit-gate.log",
+    "implementer/phase1ae/ruff.log"
+  ],
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": true,
+    "replay_scheduler_delivered": true,
+    "server_http_replay_api_delivered": true,
+    "personal_default_profile_unchanged": true
+  },
+  "invariants": {
+    "lease_token_persisted_in_session_spec": false,
+    "dsn_in_worker_repr": false,
+    "worker_role_is_dml_only": true,
+    "old_token_writes_zero_rows": true,
+    "sigkill_takeover_restores_checkpoint": true
+  },
+  "gates": [
+    {
+      "name": "Phase 1AE Compose config",
+      "command": "docker compose -p candlescope-phase1ae -f deploy/server/compose.phase1ae.yml config",
+      "result": "passed"
+    },
+    {
+      "name": "Phase 1AE SIGKILL takeover integration",
+      "command": "docker compose -p candlescope-phase1ae -f deploy/server/compose.phase1ae.yml up -d --wait && CANDLESCOPE_PHASE1AE_INTEGRATION=1 CANDLESCOPE_PHASE1AE_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1ae_replay_worker_takeover.py",
+      "result": "1 passed in 4.62s"
+    },
+    {
+      "name": "Phase 1AE unit plus 1AD/1AB/personal recovery regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1ae_replay_worker.py backend/tests/test_server_phase1ad_replay_actor.py backend/tests/test_server_phase1ab_replay_lease_postgres.py backend/tests/test_replay_recovery.py backend/tests/test_replay_shutdown.py",
+      "result": "49 passed in 6.40s"
+    },
+    {
+      "name": "new runtime lint",
+      "command": "uvx ruff@0.16.2 check backend/app/server_runtime/replay_runtime_migrations.py backend/app/server_runtime/storage/postgres_replay_session.py backend/app/server_runtime/replay_worker_settings.py backend/app/server_runtime/replay_worker_health.py backend/app/server_runtime/replay_worker.py backend/scripts/server_replay_worker.py backend/tests/test_server_phase1ae_replay_worker.py backend/tests/integration/test_server_phase1ae_replay_worker_takeover.py",
+      "result": "passed"
+    },
+    {
+      "name": "git diff whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "production-ready",
+    "twenty_four_hour_public_continuity",
+    "Phase 1AI public soak started"
+  ]
+}

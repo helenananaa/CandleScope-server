@@ -12,6 +12,7 @@ from .fastapi_sqlite_boot import (
 from .profile import (
     DEPLOYMENT_PROFILE_ENV,
     FASTAPI_UNLOCK_BLOCKERS,
+    PRODUCTION_READY_BLOCKERS,
     SERVER_FOUNDATION_CONTRACT_VERSION,
     BackendRoleBindings,
     DeploymentProfile,
@@ -25,6 +26,7 @@ __all__ = [
     "FASTAPI_SQLITE_BOOT_PATHS",
     "FASTAPI_SQLITE_BOOT_SCHEMA_VERSION",
     "FASTAPI_UNLOCK_BLOCKERS",
+    "PRODUCTION_READY_BLOCKERS",
     "SERVER_FOUNDATION_CONTRACT_VERSION",
     "SQLITE_BOOT_BLOCKER",
     "BackendRoleBindings",

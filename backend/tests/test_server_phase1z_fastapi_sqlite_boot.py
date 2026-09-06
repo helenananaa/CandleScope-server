@@ -13,7 +13,6 @@ from app.deployment import (
     SQLITE_BOOT_BLOCKER,
     DeploymentSettings,
     FastAPISqliteBootError,
-    ServerRuntimeUnavailableError,
     fastapi_sqlite_boot_inventory,
     load_deployment_settings,
     refuse_server_sqlite_boot,
@@ -61,9 +60,9 @@ def test_sqlite_boot_inventory_is_frozen_and_not_profile_gated() -> None:
     wire = fastapi_sqlite_boot_inventory()
     assert wire["schema_version"] == "candlescope.fastapi-sqlite-boot-inventory.v1"
     assert wire["blocker"] == SQLITE_BOOT_BLOCKER
-    assert SQLITE_BOOT_BLOCKER in FASTAPI_UNLOCK_BLOCKERS
+    assert SQLITE_BOOT_BLOCKER not in FASTAPI_UNLOCK_BLOCKERS
     assert wire["server_boot_allowed"] is False
-    assert wire["profile_gated"] is False
+    assert wire["profile_gated"] is True
     assert [path.initializer for path in FASTAPI_SQLITE_BOOT_PATHS] == [
         "init_klines_storage",
         "init_market_metrics_storage",
@@ -71,6 +70,9 @@ def test_sqlite_boot_inventory_is_frozen_and_not_profile_gated() -> None:
         "init_liquidation_storage",
         "ReplaySQLiteStore",
     ]
+    assert [path.module for path in FASTAPI_SQLITE_BOOT_PATHS[:4]] == [
+        "app.deployment.personal_runtime"
+    ] * 4
     assert wire["paths"] == [path.to_wire() for path in FASTAPI_SQLITE_BOOT_PATHS]
     dumped = json.dumps(wire)
     assert "password" not in dumped
@@ -87,14 +89,14 @@ def test_personal_may_open_sqlite_and_server_cannot() -> None:
     assert exc.value.code == "FASTAPI_SQLITE_CONTROL_OR_MARKET_PATH"
     assert exc.value.details["server_boot_allowed"] is False
     assert "token" not in json.dumps(exc.value.to_wire())
-    with pytest.raises(ServerRuntimeUnavailableError, match="contract-only"):
-        server.require_runtime_support()
+    server.require_runtime_support()
 
 
 def test_server_startup_still_refuses_sqlite_if_runtime_support_is_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from app import main as main_module
+    from app.deployment import personal_runtime as personal_module
 
     storage_calls: list[str] = []
     monkeypatch.setenv("CANDLESCOPE_PROFILE", "server")
@@ -102,22 +104,22 @@ def test_server_startup_still_refuses_sqlite_if_runtime_support_is_skipped(
         DeploymentSettings, "require_runtime_support", lambda self: None
     )
     monkeypatch.setattr(
-        main_module,
+        personal_module,
         "init_klines_storage",
         lambda: storage_calls.append("klines"),
     )
     monkeypatch.setattr(
-        main_module,
+        personal_module,
         "init_market_metrics_storage",
         lambda: storage_calls.append("metrics"),
     )
     monkeypatch.setattr(
-        main_module,
+        personal_module,
         "init_trade_flow_storage",
         lambda _path: storage_calls.append("trade_flow"),
     )
     monkeypatch.setattr(
-        main_module,
+        personal_module,
         "init_liquidation_storage",
         lambda _path: storage_calls.append("liquidation"),
     )
@@ -132,20 +134,37 @@ def test_startup_calls_sqlite_inits_after_both_server_guards() -> None:
     startup = _function_def(_module_ast(MAIN_PATH), "startup_event")
     names = _ordered_call_names(startup)
     required = [
+        "load_deployment_settings",
         "require_runtime_support",
         "refuse_server_sqlite_boot",
+        "start_personal_runtime",
+        "start_server_runtime",
+    ]
+    indexes = [names.index(name) for name in required]
+    assert indexes == sorted(indexes)
+    personal = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "deployment"
+        / "personal_runtime.py"
+    )
+    personal_names = _ordered_call_names(
+        _function_def(_module_ast(personal), "start_personal_runtime")
+    )
+    for name in (
         "init_klines_storage",
         "init_market_metrics_storage",
         "init_trade_flow_storage",
         "init_liquidation_storage",
-        "_init_replay_runtime",
-    ]
-    indexes = [names.index(name) for name in required]
-    assert indexes == sorted(indexes)
-    source = ast.get_source_segment(MAIN_PATH.read_text(encoding="utf-8"), startup)
-    assert source is not None
-    assert "CANDLESCOPE_PROFILE" not in source
-    assert "DeploymentProfile.PERSONAL" not in source
+    ):
+        assert name in personal_names
+    server_source = (
+        Path(__file__).resolve().parents[1]
+        / "app"
+        / "deployment"
+        / "server_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "init_klines_storage" not in server_source
 
 
 def test_replay_runtime_still_defaults_to_sqlite_and_fastapi_stays_locked() -> None:
@@ -155,10 +174,12 @@ def test_replay_runtime_still_defaults_to_sqlite_and_fastapi_stays_locked() -> N
     assert ReplaySQLiteStore.__module__ == "app.replay.storage.sqlite_store"
     refusal = fastapi_unlock_refusal()
     assert refusal["fastapi_runtime_supported"] is False
+    assert refusal["production_ready"] is False
     assert refusal["details"]["sqlite_boot"]["server_boot_allowed"] is False
     assert refusal["details"]["sqlite_boot"]["paths"] == [
         path.to_wire() for path in FASTAPI_SQLITE_BOOT_PATHS
     ]
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()
+    with pytest.raises(FastAPISqliteBootError):
+        refuse_server_sqlite_boot(settings)

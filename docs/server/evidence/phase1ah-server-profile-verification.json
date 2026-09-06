@@ -1,0 +1,78 @@
+{
+  "schema_version": "candlescope.server-phase1ah-verification.v1",
+  "captured_at_utc": "2026-09-04T10:42:21Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "35c990ea83a500bcd819a1a380fe83d03e7d28be",
+  "phase": "phase1ah-server-profile",
+  "phase_passed": true,
+  "phase1ah_passed": true,
+  "status": "SERVER_PROFILE_RUNTIME_COMPLETE_NOT_PRODUCTION_READY",
+  "production_ready": false,
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": true,
+    "personal_default_profile_unchanged": true,
+    "runtime_supported_server": true,
+    "sqlite_negative_inventory_enforced": true
+  },
+  "invariants": {
+    "server_boot_opens_sqlite": false,
+    "server_falls_back_to_personal": false,
+    "lease_token_in_public_dto": false,
+    "production_ready_claimed": false
+  },
+  "launch": {
+    "profile": "server",
+    "capabilities_protocol": "replay.v1",
+    "capabilities_status": 200,
+    "live_runtime_status": "SERVER_PROFILE_RUNTIME_COMPLETE_NOT_PRODUCTION_READY",
+    "live_production_ready": false,
+    "runs": 2
+  },
+  "gates": [
+    {
+      "name": "Phase 1AH unit plus 1W/1Z/1AG regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1ah_profile.py backend/tests/test_server_phase1w_composition.py backend/tests/test_server_phase1z_fastapi_sqlite_boot.py backend/tests/test_server_phase1ag_replay_api.py",
+      "result": "20 passed"
+    },
+    {
+      "name": "Phase 1AH Compose integration run 1",
+      "command": "docker compose -p candlescope-phase1ah -f deploy/server/compose.phase1ah.yml up -d --wait && CANDLESCOPE_PHASE1AH_INTEGRATION=1 CANDLESCOPE_PHASE1AH_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1ah_profile.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "Phase 1AH Compose integration run 2",
+      "command": "CANDLESCOPE_PHASE1AH_INTEGRATION=1 CANDLESCOPE_PHASE1AH_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1ah_profile.py",
+      "result": "1 passed"
+    },
+    {
+      "name": "CANDLESCOPE_PROFILE=server FastAPI entry twice",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python launch_server_entry.py",
+      "result": "capabilities_status=200 profile=server production_ready=false twice"
+    },
+    {
+      "name": "all server phase tests",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase*.py",
+      "result": "269 passed"
+    },
+    {
+      "name": "personal replay regression with server phase tests",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase*.py backend/tests/test_replay_service.py backend/tests/test_replay_trade_service.py backend/tests/test_replay_recovery.py backend/tests/test_replay_shutdown.py",
+      "result": "322 passed"
+    },
+    {
+      "name": "new runtime lint",
+      "command": "uvx ruff@0.16.2 check backend/app/deployment/personal_runtime.py backend/app/server_runtime/application.py backend/app/server_runtime/replay_worker_pool.py backend/tests/test_server_phase1ah_profile.py",
+      "result": "passed"
+    },
+    {
+      "name": "git diff whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "production-ready",
+    "twenty_four_hour_public_continuity",
+    "Phase 1AI public soak started"
+  ]
+}

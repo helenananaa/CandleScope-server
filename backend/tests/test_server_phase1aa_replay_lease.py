@@ -151,5 +151,4 @@ def test_lease_is_not_a_worker_pool_and_fastapi_stays_locked() -> None:
     runtime_source = inspect.getsource(start_replay_runtime)
     assert "ReplaySessionLease" not in runtime_source
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()

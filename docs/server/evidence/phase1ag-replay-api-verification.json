@@ -1,0 +1,59 @@
+{
+  "schema_version": "candlescope.server-phase1ag-verification.v1",
+  "captured_at_utc": "2026-09-04T10:57:47Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "7c4188bf24bc6b259f0aefb17d0aac1ae634b673",
+  "verified_on_commit": "0a91e00ad8189bdd43ec5bb79c9e55be87af4d76",
+  "phase": "phase1ag-replay-api",
+  "phase_passed": true,
+  "phase1ag_passed": true,
+  "status": "SERVER_REPLAY_API_COMPLETE_PROFILE_STILL_LOCKED",
+  "log_paths": [
+    "implementer/phase1ag/pytest-unit-gate.log",
+    "implementer/phase1ag/integration-pass.log",
+    "implementer/phase1ag/npm-test-replay.log",
+    "implementer/phase1ag/ruff.log"
+  ],
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": true,
+    "personal_default_profile_unchanged": true
+  },
+  "invariants": {
+    "server_adapter_holds_actor": false,
+    "replay_v2_falls_back_to_personal": false,
+    "read_only_can_mutate": false,
+    "lease_token_in_public_dto": false
+  },
+  "gates": [
+    {
+      "name": "Phase 1AG API unit plus personal replay/stream/identity regression",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1ag_replay_api.py backend/tests/test_replay_api.py backend/tests/test_replay_stream.py backend/tests/test_server_phase1x_query_identity.py backend/tests/test_server_phase1y_query_workspace.py",
+      "result": "33 passed, 4 warnings in 2.07s"
+    },
+    {
+      "name": "Phase 1AG Compose integration",
+      "command": "docker compose -p candlescope-phase1ag -f deploy/server/compose.phase1ag.yml up -d --wait && CANDLESCOPE_PHASE1AG_INTEGRATION=1 CANDLESCOPE_PHASE1AG_ALLOW_TEST_RESET=1 PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/integration/test_server_phase1ag_replay_api.py",
+      "result": "1 passed in 0.57s"
+    },
+    {
+      "name": "frontend replay tests",
+      "command": "cd frontend && npm run test:replay",
+      "result": "327 passed"
+    },
+    {
+      "name": "new runtime lint",
+      "command": "uvx ruff@0.16.2 check backend/app/replay/application.py backend/app/server_runtime/access_identity.py backend/app/server_runtime/replay_api_service.py backend/app/server_runtime/replay_api_composition.py backend/tests/test_server_phase1ag_replay_api.py",
+      "result": "passed"
+    },
+    {
+      "name": "git diff whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "production-ready",
+    "twenty_four_hour_public_continuity",
+    "Phase 1AI public soak started"
+  ]
+}

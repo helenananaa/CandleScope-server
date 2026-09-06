@@ -34,7 +34,6 @@ from .actor import (
     ReplaySessionActor,
 )
 from .bars.builder import ReplayBarBuilder, assess_bar_builder_capability
-from .bars.trade_builder import TradeReplayBarBuilder
 from .broker.execution import ConservativeBarBroker
 from .broker.models import (
     Account,
@@ -106,6 +105,7 @@ from .period_summary import (
     ReplayPeriodSummary,
     encode_component_state,
 )
+from .session_factory import AggTradeReplaySessionFactory
 from .source_chain import next_source_chain_hash
 from .sources.bar_source import (
     BAR_TERMINAL_SOURCE_LATEST_CLOSED,
@@ -2819,6 +2819,26 @@ class ReplayService:
                     blind_mode=config.blind_mode,
                 )
 
+            return AggTradeReplaySessionFactory().create_actor(
+                session_id=session_id,
+                config=config,
+                reducer=reducer,
+                source_factory=source_factory,
+                replay_start_ms=dataset.replay_start_ms,
+                replay_end_time_ms=dataset.replay_rows[-1].close_time_ms,
+                warmup_bars=dataset.warmup_rows,
+                command_queue_size=self.settings.command_queue_size,
+                event_buffer_size=self.settings.event_buffer_size,
+                max_emit_fps=self.settings.max_emit_fps,
+                controller_ttl_seconds=self.settings.controller_ttl_seconds,
+                checkpoint_event_interval=self.settings.checkpoint_event_interval,
+                checkpoint_virtual_ms=self.settings.checkpoint_virtual_ms,
+                restore_checkpoint=restore_checkpoint,
+                retained_checkpoints=retained_checkpoints,
+                recovery_target=recovery_target,
+                mutation_hook=self._persist_mutation,
+            )
+
         return ReplaySessionActor(
             session_id=session_id,
             config=config,
@@ -3622,13 +3642,14 @@ class ReplayService:
                     ReplayErrorCode.DATASET_INCOMPLETE,
                     "aggregate-trade broker is missing its dataset ref",
                 )
-            builder: ReplayBarBuilder | TradeReplayBarBuilder = TradeReplayBarBuilder(
-                base_interval=config.base_interval,
-                display_interval=config.display_interval,
+            return AggTradeReplaySessionFactory().create_broker(
+                config,
+                broker_config,
                 replay_start_ms=dataset.replay_start_ms,
                 replay_end_time_ms=dataset.replay_rows[-1].close_time_ms,
                 warmup_bars=dataset.warmup_rows,
                 max_closed_bars=max_closed_bars,
+                execution_mode=execution_mode,
             )
         else:
             verified_halts = ReplayService._actor_bar_halts(

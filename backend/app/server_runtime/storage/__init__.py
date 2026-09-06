@@ -26,6 +26,8 @@ from .postgres_replay_lease import (
     REPLAY_SESSION_LEASE_TABLE,
     PostgresReplaySessionLeaseStore,
 )
+from .postgres_replay_scheduler import PostgresReplaySchedulerStore
+from .postgres_replay_session import PostgresReplaySessionStore
 
 __all__ = [
     "CREATE_REPLAY_SESSION_LEASE_TABLE_SQL",
@@ -43,7 +45,9 @@ __all__ = [
     "ClickHouseSchemaError",
     "PostgresQueryAuditVerifier",
     "PostgresQueryControlStore",
+    "PostgresReplaySchedulerStore",
     "PostgresReplaySessionLeaseStore",
+    "PostgresReplaySessionStore",
     "PostgresStreamLeaseStore",
     "QueryAuditChainVerification",
 ]

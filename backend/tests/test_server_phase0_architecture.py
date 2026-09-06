@@ -49,9 +49,14 @@ def _imports(path: Path) -> list[tuple[str, int]]:
     return imports
 
 
-def _forbidden_imports(root: Path) -> list[str]:
+_RUNTIME_OWNERS = frozenset({"personal_runtime.py", "server_runtime.py"})
+
+
+def _forbidden_imports(root: Path, *, allow_runtime_owners: bool = False) -> list[str]:
     violations: list[str] = []
     for path in sorted(root.rglob("*.py")):
+        if allow_runtime_owners and path.name in _RUNTIME_OWNERS:
+            continue
         for module, line in _imports(path):
             module_root = module.split(".", 1)[0]
             if module_root in FORBIDDEN_IMPORT_ROOTS or module in FORBIDDEN_APP_MODULES:
@@ -66,7 +71,7 @@ def test_server_contracts_are_transport_and_storage_neutral() -> None:
 
 def test_deployment_profile_has_no_runtime_adapter_dependency() -> None:
     assert DEPLOYMENT_ROOT.is_dir()
-    assert _forbidden_imports(DEPLOYMENT_ROOT) == []
+    assert _forbidden_imports(DEPLOYMENT_ROOT, allow_runtime_owners=True) == []
 
 
 def test_server_phase_zero_has_all_frozen_contract_artifacts() -> None:

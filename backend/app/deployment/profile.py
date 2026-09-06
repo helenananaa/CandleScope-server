@@ -1,10 +1,8 @@
 """Strict deployment-profile selection for CandleScope.
 
-Phase 0 defines the personal/server boundary but deliberately does not claim
-that the distributed server runtime exists. Callers must invoke
-require_runtime_support before booting a selected profile. This keeps the
-future server value fail-closed while the current personal runtime remains
-the default.
+Personal remains the default. Server FastAPI may boot after composition and
+the SQLite negative inventory pass; it is not production-ready until public
+24-hour continuity exists.
 """
 
 from __future__ import annotations
@@ -16,12 +14,8 @@ from dataclasses import dataclass
 
 DEPLOYMENT_PROFILE_ENV = "CANDLESCOPE_PROFILE"
 SERVER_FOUNDATION_CONTRACT_VERSION = "candlescope.server-foundation.v1"
-FASTAPI_UNLOCK_BLOCKERS = (
-    "twenty_four_hour_public_continuity",
-    "api_gateway_identity_and_tenancy",
-    "replay_worker_pool",
-    "fastapi_must_not_boot_sqlite_control_or_market_paths",
-)
+FASTAPI_UNLOCK_BLOCKERS: tuple[str, ...] = ()
+PRODUCTION_READY_BLOCKERS = ("twenty_four_hour_public_continuity",)
 
 
 class DeploymentProfile(str, enum.Enum):
@@ -72,9 +66,14 @@ class DeploymentSettings:
 
     @property
     def runtime_supported(self) -> bool:
-        """Whether the current codebase can safely boot this profile."""
+        """Whether the current codebase can boot this profile.
 
-        return self.profile is DeploymentProfile.PERSONAL
+        Server boot is not production-ready: public 24h continuity is still
+        outstanding. ``refuse_server_sqlite_boot`` remains the negative SQLite
+        inventory that must pass after this property is true.
+        """
+
+        return True
 
     def require_runtime_support(self) -> None:
         """Fail closed until the selected runtime has implemented its roles."""
@@ -82,9 +81,7 @@ class DeploymentSettings:
         if self.runtime_supported:
             return
         raise ServerRuntimeUnavailableError(
-            "CANDLESCOPE_PROFILE=server is contract-only; independent "
-            "data-plane processes exist, but FastAPI server startup remains "
-            "locked: " + ", ".join(FASTAPI_UNLOCK_BLOCKERS)
+            "CANDLESCOPE_PROFILE=server is not implemented"
         )
 
 

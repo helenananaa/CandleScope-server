@@ -6,7 +6,6 @@ import pytest
 from app.deployment import (
     FASTAPI_UNLOCK_BLOCKERS,
     DeploymentProfile,
-    ServerRuntimeUnavailableError,
     load_deployment_settings,
 )
 from app.server_runtime.composition import (
@@ -46,6 +45,8 @@ def _complete_env(**overrides: str) -> dict[str, str]:
         "CANDLESCOPE_SERVER_QUERY_S3_ACCESS_KEY_ID": "access",
         "CANDLESCOPE_SERVER_QUERY_S3_SECRET_ACCESS_KEY": "secret",
         "CANDLESCOPE_SERVER_QUERY_AUTH_BEARER_TOKEN": TOKEN_A,
+        "CANDLESCOPE_SERVER_QUERY_AUTH_ORGANIZATION_ID": "org-alpha",
+        "CANDLESCOPE_SERVER_QUERY_AUTH_WORKSPACE_ID": "ws-research",
         "CANDLESCOPE_SERVER_QUERY_CONTROL_BEARER_TOKEN": TOKEN_B,
         "CANDLESCOPE_SERVER_QUERY_POSTGRES_DSN": "postgresql://query@localhost:15432/candlescope",
         "CANDLESCOPE_SERVER_QUERY_INSTANCE_ID": "query-a",
@@ -58,15 +59,16 @@ def test_complete_env_is_configured_but_does_not_unlock_fastapi() -> None:
     composition = load_server_data_plane_composition(_complete_env())
     wire = composition.to_public_wire()
     assert wire["status"] == "configured"
-    assert wire["fastapi_runtime_supported"] is False
+    assert wire["fastapi_runtime_supported"] is True
     assert wire["fastapi_unlock_blockers"] == list(FASTAPI_UNLOCK_BLOCKERS)
+    assert wire["production_ready"] is False
+    assert wire["health_binds"]["snapshot_query"] == "127.0.0.1:8110"
     assert "writer-secret" not in json.dumps(wire)
     assert "query-secret" not in json.dumps(wire)
     assert "secret" not in json.dumps(wire["s3_endpoint_url"])
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
-    assert settings.runtime_supported is False
-    with pytest.raises(ServerRuntimeUnavailableError, match="contract-only"):
-        settings.require_runtime_support()
+    assert settings.runtime_supported is True
+    settings.require_runtime_support()
 
 
 def test_missing_role_and_cross_role_drift_fail_closed() -> None:
@@ -89,6 +91,13 @@ def test_missing_role_and_cross_role_drift_fail_closed() -> None:
         load_server_data_plane_composition(store)
     assert store_exc.value.code == "OBJECT_STORE_DRIFT"
 
+    unbound = _complete_env()
+    unbound.pop("CANDLESCOPE_SERVER_QUERY_AUTH_ORGANIZATION_ID")
+    unbound.pop("CANDLESCOPE_SERVER_QUERY_AUTH_WORKSPACE_ID")
+    with pytest.raises(ServerCompositionError) as scope_exc:
+        load_server_data_plane_composition(unbound)
+    assert scope_exc.value.code == "QUERY_SCOPE_UNBOUND"
+
 
 def test_optional_health_binds_must_be_loopback() -> None:
     good = load_server_data_plane_composition(
@@ -105,6 +114,13 @@ def test_optional_health_binds_must_be_loopback() -> None:
         )
     assert bind_exc.value.code == "HEALTH_BIND_INVALID"
 
+    with pytest.raises(ServerCompositionError) as query_bind_exc:
+        load_server_data_plane_composition(
+            _complete_env(CANDLESCOPE_SERVER_QUERY_BIND_HOST="0.0.0.0")
+        )
+    assert query_bind_exc.value.code == "HEALTH_BIND_INVALID"
+    assert query_bind_exc.value.details["role"] == "snapshot_query"
+
 
 def test_cli_config_and_fastapi_unlock(
     monkeypatch: pytest.MonkeyPatch,
@@ -115,10 +131,11 @@ def test_cli_config_and_fastapi_unlock(
     assert server_composition_check.main(["config"]) == 0
     configured = json.loads(capsys.readouterr().out)
     assert configured["status"] == "configured"
-    assert configured["fastapi_runtime_supported"] is False
-    assert server_composition_check.main(["fastapi-unlock"]) == 1
-    locked = json.loads(capsys.readouterr().out)
-    assert locked["code"] == "FASTAPI_SERVER_PROFILE_LOCKED"
+    assert configured["fastapi_runtime_supported"] is True
+    assert server_composition_check.main(["fastapi-unlock"]) == 0
+    unlocked = json.loads(capsys.readouterr().out)
+    assert unlocked["fastapi_runtime_supported"] is True
+    assert unlocked["production_ready"] is False
     assert fastapi_unlock_refusal()["fastapi_runtime_supported"] is False
     assert (
         load_deployment_settings({"CANDLESCOPE_PROFILE": "server"}).profile

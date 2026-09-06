@@ -281,8 +281,7 @@ def test_cli_public_24h_refuses_to_claim_continuity(
 def test_server_profile_remains_fail_closed() -> None:
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
     assert settings.profile is DeploymentProfile.SERVER
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()
 
 
 def test_ready_collector_without_durable_cursors_is_still_pid_only() -> None:

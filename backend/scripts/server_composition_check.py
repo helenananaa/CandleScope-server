@@ -9,6 +9,7 @@ import sys
 from app.server_runtime.composition import (
     ServerCompositionError,
     fastapi_unlock_refusal,
+    fastapi_unlock_status,
     load_server_data_plane_composition,
 )
 
@@ -23,14 +24,17 @@ def main(argv: list[str] | None = None) -> int:
         help="validate process env, or print FastAPI unlock blockers",
     )
     args = parser.parse_args(argv)
-    if args.command == "fastapi-unlock":
-        print(json.dumps(fastapi_unlock_refusal(), sort_keys=True), flush=True)
-        return 1
     try:
         composition = load_server_data_plane_composition()
     except ServerCompositionError as exc:
+        if args.command == "fastapi-unlock":
+            print(json.dumps(fastapi_unlock_refusal(), sort_keys=True), flush=True)
+            return 1
         print(json.dumps(exc.to_wire(), sort_keys=True), flush=True)
         return 1
+    if args.command == "fastapi-unlock":
+        print(json.dumps(fastapi_unlock_status(composition), sort_keys=True), flush=True)
+        return 0
     print(json.dumps(composition.to_public_wire(), sort_keys=True), flush=True)
     return 0
 

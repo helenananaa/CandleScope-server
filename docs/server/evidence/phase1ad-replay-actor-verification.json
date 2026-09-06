@@ -1,0 +1,61 @@
+{
+  "schema_version": "candlescope.server-phase1ad-verification.v1",
+  "captured_at_utc": "2026-09-04T08:57:56Z",
+  "branch": "codex/server-phase1b-durable-publish",
+  "base_commit": "1fb42bf35c8bdea6874e7d2a632152244e4184b6",
+  "phase": "phase1ad-replay-actor-composition",
+  "phase_passed": true,
+  "phase1ad_passed": true,
+  "status": "LEASED_REPLAY_ACTOR_COMPOSITION_COMPLETE_NOT_WORKER",
+  "profile_boundary": {
+    "main_fastapi_server_profile_unlocked": false,
+    "replay_worker_process_delivered": false,
+    "replay_scheduler_delivered": false,
+    "server_http_replay_api_delivered": false,
+    "personal_default_profile_unchanged": true
+  },
+  "invariants": {
+    "app_replay_imports_server_runtime": false,
+    "lease_token_in_public_ref": false,
+    "mutation_commit_requires_active_lease": true,
+    "first_slice_source_kind": "agg_trade",
+    "first_slice_quality_mode": "exact",
+    "first_slice_blind_mode": false,
+    "first_slice_warmup_bars": 0
+  },
+  "gates": [
+    {
+      "name": "Phase 1AD leased actor STEP, fence/rollback/idempotency, import graph, server profile still locked",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_server_phase1ad_replay_actor.py -q",
+      "result": "11 passed"
+    },
+    {
+      "name": "Phase 1AD documented pytest gate including 1AC/1Q/personal replay/phase0/phase1z",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest -q backend/tests/test_server_phase1ad_replay_actor.py backend/tests/test_server_phase1ac_leased_snapshot.py backend/tests/test_server_phase1q_replay_snapshot.py backend/tests/test_replay_trade_service.py backend/tests/test_replay_recovery.py backend/tests/test_replay_shutdown.py backend/tests/test_server_phase0_architecture.py backend/tests/test_server_phase1z_fastapi_sqlite_boot.py",
+      "result": "72 passed"
+    },
+    {
+      "name": "personal ReplayService regression after factory extraction",
+      "command": "PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests/test_replay_service.py -q",
+      "result": "15 passed"
+    },
+    {
+      "name": "new runtime lint and format",
+      "command": "uvx ruff@0.16.2 check backend/app/replay/session_factory.py backend/app/server_runtime/replay_session.py backend/app/server_runtime/testing/in_memory_replay_session_store.py backend/tests/test_server_phase1ad_replay_actor.py && uvx ruff@0.16.2 format --check backend/app/replay/session_factory.py backend/app/server_runtime/replay_session.py backend/app/server_runtime/testing/in_memory_replay_session_store.py backend/tests/test_server_phase1ad_replay_actor.py",
+      "result": "passed"
+    },
+    {
+      "name": "git diff whitespace check",
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "claims_not_made": [
+    "Replay Worker process exists",
+    "PostgreSQL replay session store is durable",
+    "Replay scheduler or Worker pool exists",
+    "Server HTTP/WS replay API exists",
+    "CANDLESCOPE_PROFILE=server can start FastAPI",
+    "production-ready"
+  ]
+}

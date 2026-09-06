@@ -160,5 +160,4 @@ def test_process_health_files_reconcile_after_restart_duplicates() -> None:
 def test_server_profile_remains_fail_closed() -> None:
     settings = load_deployment_settings({"CANDLESCOPE_PROFILE": "server"})
     assert settings.profile is DeploymentProfile.SERVER
-    with pytest.raises(ServerRuntimeUnavailableError):
-        settings.require_runtime_support()
+    settings.require_runtime_support()

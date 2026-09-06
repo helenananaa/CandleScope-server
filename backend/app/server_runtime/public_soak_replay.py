@@ -216,11 +216,20 @@ class PublicSoakReplayDriver:
             ),
         )
         observed["replay-b-acquire"] = acquired_b
+        # Manual start_policy leaves the session PAUSED; PLAY before PAUSE.
+        observed["replay-b-play"] = await self._command(
+            workload.replay_b.session_id,
+            _typed_command(
+                f"{workload.replay_b.run_id}-play",
+                CommandType.PLAY,
+                expected_revision=acquired_b.revision,
+            ),
+        )
         observed["replay-b-step"] = await self._command(
             workload.replay_b.session_id,
             _step_command(
                 f"{workload.replay_b.run_id}-step",
-                expected_revision=acquired_b.revision,
+                expected_revision=observed["replay-b-play"].revision,
             ),
         )
         observed["replay-b-pause"] = await self._command(

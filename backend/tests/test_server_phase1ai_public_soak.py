@@ -1100,6 +1100,7 @@ def test_replay_commands_and_command_id_idempotency(tmp_path: Path) -> None:
         observed = await driver.drive_commands(workload)
         assert observed["replay-a-acquire"].command_id.endswith("-acquire")
         assert observed["replay-a-step"].revision == 1
+        assert observed["replay-b-play"].command_id.endswith("-play")
         assert observed["replay-b-resume"].command_id.endswith("-resume")
         assert transport.runs["replay-queued"]["state"] == "PENDING"
         first = await driver.probe_idempotency(workload)

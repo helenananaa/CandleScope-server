@@ -29,6 +29,7 @@ from app.server_runtime.public_soak_manifest import (
 SAMPLE_SCHEMA_VERSION = "candlescope.server-phase1ai-sample.v1"
 RESULT_SCHEMA_VERSION = "candlescope.server-phase1ai-result.v1"
 GENESIS_SHA256 = "0" * 64
+SOAK_ARCHIVE_SEGMENT_EVENT_COUNT = 100
 PRIVATE_PATH_RE = re.compile(r"^/(?:home|root|var|opt|tmp|usr|etc|private)/")
 MARKET_KEYS = frozenset(
     {
@@ -1123,7 +1124,9 @@ def _role_child_env(
     env.setdefault("CANDLESCOPE_SERVER_REPLAY_SCHEDULER_HEARTBEAT_TTL_MS", "30000")
     env.setdefault("CANDLESCOPE_SERVER_REPLAY_WORKER_QUERY_REQUEST_TIMEOUT_MS", "60000")
     env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_DATA_EPOCH"] = manifest.run_id
-    env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_SEGMENT_EVENT_COUNT"] = "100"
+    env["CANDLESCOPE_SERVER_ARCHIVE_WRITER_SEGMENT_EVENT_COUNT"] = str(
+        SOAK_ARCHIVE_SEGMENT_EVENT_COUNT
+    )
     env["CANDLESCOPE_SERVER_CLICKHOUSE_WRITER_KAFKA_GROUP_ID"] = (
         f"{manifest.run_id}-writer"
     )
@@ -1227,6 +1230,19 @@ class ProcessFaultActuator:
         live = self._manager._live.get(role)
         return live is not None and live.returncode is None
 
+    def _hook_dir(self) -> Path:
+        return Path(self._environ.get("CANDLESCOPE_PHASE1AI_HOOK_DIR", "/tmp"))
+
+    async def arm_quiet_hold(self) -> None:
+        from app.server_runtime.soak_faults import arm_quiet_hold
+
+        arm_quiet_hold(self._hook_dir())
+
+    async def clear_quiet_hold(self) -> None:
+        from app.server_runtime.soak_faults import clear_quiet_hold
+
+        clear_quiet_hold(self._hook_dir())
+
     async def quiet_observation(self):
         import aiohttp
 
@@ -1283,6 +1299,7 @@ __all__ = [
     "GENESIS_SHA256",
     "RESULT_SCHEMA_VERSION",
     "SAMPLE_SCHEMA_VERSION",
+    "SOAK_ARCHIVE_SEGMENT_EVENT_COUNT",
     "EvidenceWriter",
     "ProcessFaultActuator",
     "SampleRecord",

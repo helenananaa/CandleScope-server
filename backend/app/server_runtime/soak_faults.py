@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,8 @@ ClockMs = Callable[[], int]
 Sleeper = Callable[[float], Awaitable[None]]
 WRITER_PRECOMMIT_HOOK = "after_project_before_commit"
 ARCHIVER_PRECOMMIT_HOOK = "after_archive_before_commit"
+COLLECTOR_QUIET_HOLD = "collector.quiet.hold"
+QUIET_HOLD_MAX_MS = 8_000
 
 
 class FaultStatus(str, enum.Enum):
@@ -80,6 +83,10 @@ class FaultActuator(Protocol):
     async def recovery_observed(self, spec: FaultSpec) -> bool: ...
 
     async def quiet_observation(self) -> QuietObservation: ...
+
+    async def arm_quiet_hold(self) -> None: ...
+
+    async def clear_quiet_hold(self) -> None: ...
 
 
 @dataclass
@@ -216,21 +223,32 @@ class SoakFaultMachine:
         )
 
     async def _wait_quiet(self, record: FaultRecord) -> None:
-        timeout_ms = self._manifest.quiet_checkpoint_timeout_ms
-        deadline = self._clock_ms() + timeout_ms
-        last_error: FaultMachineError | None = None
-        while self._clock_ms() < deadline:
-            quiet = await self._actuator.quiet_observation()
-            try:
-                verify_quiet_checkpoint(quiet)
-                return
-            except FaultMachineError as exc:
-                last_error = exc
-                await self._sleep(0.2)
-        raise last_error or FaultMachineError(
-            "QUIET_CHECKPOINT_TIMEOUT",
-            f"{record.spec.fault_id} quiet checkpoint did not converge",
-        )
+        armed = False
+        try:
+            arm = getattr(self._actuator, "arm_quiet_hold", None)
+            if callable(arm):
+                await arm()
+                armed = True
+            timeout_ms = self._manifest.quiet_checkpoint_timeout_ms
+            deadline = self._clock_ms() + timeout_ms
+            last_error: FaultMachineError | None = None
+            while self._clock_ms() < deadline:
+                quiet = await self._actuator.quiet_observation()
+                try:
+                    verify_quiet_checkpoint(quiet)
+                    return
+                except FaultMachineError as exc:
+                    last_error = exc
+                    await self._sleep(0.05)
+            raise last_error or FaultMachineError(
+                "QUIET_CHECKPOINT_TIMEOUT",
+                f"{record.spec.fault_id} quiet checkpoint did not converge",
+            )
+        finally:
+            if armed:
+                clear = getattr(self._actuator, "clear_quiet_hold", None)
+                if callable(clear):
+                    await clear()
 
     def _transition(self, record: FaultRecord, target: FaultStatus) -> None:
         allowed = _ALLOWED[record.status]
@@ -280,6 +298,63 @@ def verify_quiet_checkpoint(observation: QuietObservation) -> None:
         )
 
 
+def quiet_hold_path(directory: str | Path) -> Path:
+    return Path(directory) / COLLECTOR_QUIET_HOLD
+
+
+def arm_quiet_hold(directory: str | Path) -> Path:
+    path = quiet_hold_path(directory)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("quiet", encoding="utf-8")
+    return path
+
+
+def clear_quiet_hold(directory: str | Path) -> None:
+    try:
+        quiet_hold_path(directory).unlink()
+    except FileNotFoundError:
+        return
+
+
+async def hold_after_aligned_publish(
+    directory: str | Path,
+    *,
+    last_offset: int,
+    segment_event_count: int,
+    clock_ms: ClockMs | None = None,
+    sleep: Sleeper | None = None,
+    max_hold_ms: int = QUIET_HOLD_MAX_MS,
+) -> None:
+    """Block after a complete archive segment while a quiet hold is armed.
+
+    The collector keeps its lease heartbeat on another task. The hold is
+    capped so a missed clear cannot stall the Binance websocket indefinitely.
+    """
+
+    if segment_event_count <= 0 or last_offset < 0:
+        return
+    if (last_offset + 1) % segment_event_count != 0:
+        return
+    path = quiet_hold_path(directory)
+    if not path.exists():
+        return
+    clock = clock_ms or _clock_ms
+    sleeper = sleep or _async_sleep
+    deadline = clock() + max_hold_ms
+    while path.exists() and clock() < deadline:
+        await sleeper(0.05)
+
+
+def _clock_ms() -> int:
+    return time.time_ns() // 1_000_000
+
+
+async def _async_sleep(seconds: float) -> None:
+    import asyncio
+
+    await asyncio.sleep(seconds)
+
+
 def precommit_hook_name(method: str) -> str | None:
     if method == "writer_pre_commit_exit":
         return WRITER_PRECOMMIT_HOOK
@@ -311,6 +386,8 @@ def required_methods_for_plan(plan: tuple[FaultSpec, ...]) -> tuple[str, ...]:
 
 __all__ = [
     "ARCHIVER_PRECOMMIT_HOOK",
+    "COLLECTOR_QUIET_HOLD",
+    "QUIET_HOLD_MAX_MS",
     "REQUIRED_RUN_FAULT_METHODS",
     "WRITER_PRECOMMIT_HOOK",
     "FaultActuator",
@@ -320,7 +397,11 @@ __all__ = [
     "QuietObservation",
     "SoakFaultMachine",
     "arm_precommit_hook",
+    "arm_quiet_hold",
+    "clear_quiet_hold",
+    "hold_after_aligned_publish",
     "precommit_hook_name",
+    "quiet_hold_path",
     "required_methods_for_plan",
     "verify_quiet_checkpoint",
 ]

@@ -59,6 +59,7 @@ class AggTradeCollectorService:
         publisher: ManagedMarketEventPublisher,
         source: AggTradeEventSource,
         on_health: HealthObserver | None = None,
+        after_event: HealthObserver | None = None,
         clock_ms: Callable[[], int] | None = None,
     ) -> None:
         self._settings = settings
@@ -66,6 +67,7 @@ class AggTradeCollectorService:
         self._publisher = publisher
         self._source = source
         self._on_health = on_health
+        self._after_event = after_event
         self._clock_ms = clock_ms or _system_clock_ms
         started_at_ms = self._clock_ms()
         self._health = CollectorHealth(
@@ -213,6 +215,14 @@ class AggTradeCollectorService:
                 "publishing live aggregate trades",
                 events_published_delta=1,
             )
+            after_event = self._after_event
+            if after_event is not None:
+                try:
+                    await after_event(self._health)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("collector after_event hook failed")
         except asyncio.CancelledError:
             if not self._shutdown_started:
                 await self._record_failure(

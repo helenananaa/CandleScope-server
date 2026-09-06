@@ -17,6 +17,7 @@ from app.server_runtime.health_http import (
     run_with_health_bind,
 )
 from app.server_runtime.publishers import KafkaMarketEventPublisher
+from app.server_runtime.soak_faults import hold_after_aligned_publish
 from app.server_runtime.sources import BinanceAggTradeEventSource
 from app.server_runtime.storage import PostgresStreamLeaseStore
 
@@ -35,6 +36,27 @@ async def _run_collector(
     stop_event = asyncio.Event()
     _install_signal_handlers(stop_event)
 
+    async def after_event(health: CollectorHealth) -> None:
+        hook_dir = os.environ.get("CANDLESCOPE_PHASE1AI_HOOK_DIR")
+        if not hook_dir or not hook_dir.strip():
+            return
+        offset = health.last_partition_offset
+        if offset is None:
+            return
+        raw_segment = os.environ.get(
+            "CANDLESCOPE_SERVER_ARCHIVE_WRITER_SEGMENT_EVENT_COUNT",
+            "",
+        )
+        try:
+            segment = int(raw_segment)
+        except ValueError:
+            return
+        await hold_after_aligned_publish(
+            hook_dir.strip(),
+            last_offset=offset,
+            segment_event_count=segment,
+        )
+
     async def run(on_health: HealthObserver) -> None:
         service = AggTradeCollectorService(
             settings=settings,
@@ -45,6 +67,7 @@ async def _run_collector(
             ),
             source=BinanceAggTradeEventSource(),
             on_health=on_health,
+            after_event=after_event,
         )
         await service.run(stop_event)
 

@@ -1148,6 +1148,8 @@ class _FakeActuator:
         self.trigger_ok = trigger_ok
         self.recover_ok = recover_ok
         self.triggered: list[str] = []
+        self.holds = 0
+        self.clears = 0
         self.snapshot = {
             "data_epoch": "epoch-1",
             "snapshot_version": 4,
@@ -1166,6 +1168,12 @@ class _FakeActuator:
     async def recovery_observed(self, spec: object) -> bool:
         del spec
         return self.recover_ok
+
+    async def arm_quiet_hold(self) -> None:
+        self.holds += 1
+
+    async def clear_quiet_hold(self) -> None:
+        self.clears += 1
 
     async def quiet_observation(self):
         from app.server_runtime.soak_faults import QuietObservation
@@ -1202,6 +1210,8 @@ def test_fault_one_way_transitions_and_quiet_checkpoint(tmp_path: Path) -> None:
         assert len(completed) == 1
         assert completed[0].status is FaultStatus.QUIET_CHECKPOINT_VERIFIED
         assert actuator.triggered == ["worker_sigkill"]
+        assert actuator.holds == 1
+        assert actuator.clears == 1
         assert machine.remaining() == ()
         verify_quiet_checkpoint(await actuator.quiet_observation())
 
@@ -1260,6 +1270,76 @@ def test_fault_quiet_checkpoint_rejects_mismatch() -> None:
             )
         )
     assert rejected.value.code == "QUIET_CHECKPOINT_MISMATCH"
+
+
+def test_quiet_hold_waits_only_on_aligned_offset(tmp_path: Path) -> None:
+    from app.server_runtime.soak_faults import (
+        arm_quiet_hold,
+        hold_after_aligned_publish,
+        quiet_hold_path,
+    )
+
+    async def run() -> None:
+        clock = _FaultClock(0)
+        arm_quiet_hold(tmp_path)
+        await hold_after_aligned_publish(
+            tmp_path,
+            last_offset=49,
+            segment_event_count=100,
+            clock_ms=clock,
+            sleep=clock.sleep,
+        )
+        assert clock.now == 0
+        await hold_after_aligned_publish(
+            tmp_path,
+            last_offset=99,
+            segment_event_count=100,
+            clock_ms=clock,
+            sleep=clock.sleep,
+            max_hold_ms=150,
+        )
+        assert clock.now >= 150
+        assert quiet_hold_path(tmp_path).exists()
+
+    asyncio.run(run())
+
+
+def test_quiet_checkpoint_timeout_clears_hold(tmp_path: Path) -> None:
+    from app.server_runtime.soak_faults import (
+        FaultMachineError,
+        QuietObservation,
+        SoakFaultMachine,
+    )
+
+    class _MismatchActuator(_FakeActuator):
+        async def quiet_observation(self):
+            return QuietObservation(
+                collector_durable_next_offset=self.offset,
+                writer_committed_next_offset=self.offset - 1,
+                archiver_covered_next_offset=self.offset,
+                query_snapshot=self.snapshot,
+                replay_pinned_snapshot=dict(self.snapshot),
+                unresolved_gaps=0,
+                hash_conflicts=0,
+                producer_epoch_rollback=0,
+            )
+
+    async def run() -> None:
+        clock = _FaultClock(0)
+        actuator = _MismatchActuator()
+        machine = SoakFaultMachine(
+            _parsed_manifest(tmp_path),
+            actuator,
+            clock_ms=clock,
+            sleep=clock.sleep,
+        )
+        with pytest.raises(FaultMachineError) as rejected:
+            await machine.run_all(started_at_ms=0)
+        assert rejected.value.code == "QUIET_CHECKPOINT_MISMATCH"
+        assert actuator.holds == 1
+        assert actuator.clears == 1
+
+    asyncio.run(run())
 
 
 def test_fault_writer_archiver_reuse_precommit_hooks(tmp_path: Path) -> None:

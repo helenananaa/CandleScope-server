@@ -951,7 +951,7 @@ async def _wait_archive_caught_up(
             if (
                 isinstance(writer_next, int)
                 and isinstance(archive_next, int)
-                and archive_next >= max(0, writer_next - 20)
+                and archive_next >= max(0, writer_next - 600)
             ):
                 return
             await asyncio.sleep(0.5)
